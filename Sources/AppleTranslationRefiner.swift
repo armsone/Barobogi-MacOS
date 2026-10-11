@@ -512,10 +512,9 @@ private actor RefinerEngine {
             prepared = nil // 매 요청은 빈 세션 한 개를 소비하며 이전 원문·결과를 공유하지 않는다.
         } else {
             session = LanguageModelSession(instructions: instructions)
+            // 미리 준비한 세션은 다시 준비하지 않는다. 새 세션만 대기열에 들어가기 전에 준비한다.
+            session.prewarm()
         }
-        // 이 요청이 게이트에서 다른 요청 뒤로 밀려 기다리는 동안에도(실제 추론 자리싸움과는 별개로) 세션의
-        // 준비만 먼저 시작해 둔다. 차례가 왔을 때 이미 준비돼 있으면 그만큼 체감 대기가 줄어든다.
-        session.prewarm()
         let prompt = AppleTranslationRefiner.makePrompt(items: items, nearbyOriginal: nearbyOriginal, nearbyDraft: nearbyDraft)
         let options = GenerationOptions(maximumResponseTokens: 2000)
         let clock = ContinuousClock()

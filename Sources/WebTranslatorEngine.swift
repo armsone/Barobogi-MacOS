@@ -626,6 +626,7 @@ final class WebTranslatorRunner {
         var waitStarted = Date()
         var last: String?
         var stable = 0
+        var firstResultProbe = true
         var sourceChanged = 0
         var challengeActive = false
         var extendedDeadline: Date?
@@ -666,7 +667,8 @@ final class WebTranslatorRunner {
                 reveal("\(title) 번역 결과를 받지 못했습니다. 페이지 상태를 확인하세요.", needsUser: false)
                 return .failure(.fatal("제한 시간(\(Int(limit))초) 안에 \(title) 번역 결과를 받지 못했습니다. 열린 창에서 사용 한도·보안 확인 등 페이지 상태를 확인한 뒤 다시 시도하세요."))
             }
-            await pause(0.4)
+            // 입력 직후 이미 나온 결과도 즉시 확인한다. 이후 안정성 확인 간격은 유지한다.
+            if firstResultProbe { firstResultProbe = false } else { await pause(0.4) }
             let evaluation = await page("probe", site: site, owner: owner, ticket: ticket)
             if case .unresponsive = evaluation { lastUnresponsive = true }
             guard let probe = evaluation.probe else { continue }

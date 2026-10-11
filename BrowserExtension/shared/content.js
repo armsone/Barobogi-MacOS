@@ -2023,9 +2023,9 @@
         bottom: Math.min(clip.h, g.bottom + room * 0.6)
       } : {
         left: g.left,
-        right: Math.min(clip.w, g.left + g.w + room * 1.2),
+        right: Math.min(clip.w, g.left + g.w),
         top: g.top,
-        bottom: Math.min(clip.h, g.bottom + room * 0.8)
+        bottom: Math.min(clip.h, g.bottom)
       };
     });
     for (let i = 0; i < bounds.length; i += 1) {
@@ -2299,41 +2299,7 @@
       box.appendChild(fail);
     }
 
-    // 번역문이 원문보다 길어 원래 글자 크기의 75%보다 작게 들어간 영역만, 읽는 방향으로 이어지는 빈자리까지 조금 넓혀
-    // 다시 맞춘다. 다른 영역(다른 칸·다른 말풍선의 글자 자리)에는 들어가지 않는다. 말풍선 테두리를 픽셀로 알 수 없으므로
-    // 세로쓰기는 원래 높이 그대로 왼쪽(다음 줄)으로 원래 글자 두 줄까지, 가로쓰기는 오른쪽으로 영역 너비의 50%·
-    // 아래로 원래 글자 두 줄까지만 넓힌다. 넓혀도 커지지 않으면 원래 영역으로 되돌린다.
-    units.forEach((unit, u) => {
-      if (unit.title || (unit.fitted.fits && unit.fitted.size >= unit.preferredMax * 0.75)) return;
-      const a = unit.area;
-      const others = units.filter((_, v) => v !== u).map((other) => other.area);
-      const lines = Math.max(MIN_FONT, unit.estimate) * 1.2 * 2;
-      const growBottom = (r, limit) => others.reduce((edge, o) =>
-        (o.left < r.right && o.right > r.left && o.bottom > r.bottom ? Math.min(edge, Math.max(r.bottom, o.top)) : edge), limit);
-      const growLeft = (r, limit) => others.reduce((edge, o) =>
-        (o.top < r.bottom && o.bottom > r.top && o.left < r.left ? Math.max(edge, Math.min(r.left, o.right)) : edge), limit);
-      const growRight = (r, limit) => others.reduce((edge, o) =>
-        (o.top < r.bottom && o.bottom > r.top && o.right > r.right ? Math.min(edge, Math.max(r.right, o.left)) : edge), limit);
-      const next = { ...a };
-      if (unit.vertical) {
-        // 세로쓰기는 원래 높이를 지킨다(아래로 늘리면 말풍선 밖으로 나간다). 다음 줄 방향(왼쪽)으로만 두 줄까지 넓힌다.
-        next.left = growLeft(next, Math.max(0, a.left - lines));
-      } else {
-        next.right = growRight(next, Math.min(clip.w, a.right + (a.right - a.left) * 0.5));
-        next.bottom = growBottom(next, Math.min(clip.h, a.bottom + lines));
-      }
-      if (next.bottom - a.bottom < 1 && a.left - next.left < 1 && next.right - a.right < 1) return;
-      place(unit.div, next);
-      const result = fitFontSize(unit.div, unit.text, unit.minFont, unit.preferredMax, unit.vertical);
-      if (result.size > unit.fitted.size || (result.fits && !unit.fitted.fits)) {
-        unit.area = next;
-        unit.fitted = result;
-        unit.div.dataset.grown = "1";
-      } else {
-        place(unit.div, a);
-        unit.fitted = fitFontSize(unit.div, unit.text, unit.minFont, unit.preferredMax, unit.vertical);
-      }
-    });
+    // 번역이 길어도 원문 칸 밖으로 확장하지 않는다. 같은 자리에서 크기와 줄바꿈을 맞춘다.
 
     // 한 줄 제목·세로 대사의 번역이 길면 방향과 영역을 유지한 채 줄바꿈을 허용한다.
     // 최소 글씨에서도 실패한 nowrap를 계속 유지하면 끝부분을 숨기게 된다.
