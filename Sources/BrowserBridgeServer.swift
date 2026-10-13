@@ -18,14 +18,36 @@ final class BrowserBridgeServer: @unchecked Sendable {
     private var nextConnectionID = 0
     private var socketPath: String?
     private var teamID: String?
+    /// 리스너를 만들 때(bind/listen 직후) 그 경로를 lstat한 장치·inode. fd의 fstat이 아니라 경로의
+    /// 디렉터리 엔트리를 찍어야, 경로 문자열이 같아도 가리키는 파일이 바뀌었는지(지워졌는지, 다른
+    /// 프로세스가 같은 이름으로 새로 만들었는지) 이후 같은 방식(lstat)으로 비교해 구분할 수 있다.
+    private var listenInode: (dev: dev_t, ino: ino_t)?
 
     init(engine: BrowserEngine) {
         self.engine = engine
     }
 
+    /// `listenFD >= 0`만으로는 fd가 아직 열려 있어도 그 fd가 바인드된 경로의 파일이 사라졌을 때(예: 다른
+    /// 프로세스나 정리 스크립트가 소켓 파일을 지운 경우)를 놓친다. 그러면 fd는 리스닝 상태로 남아 있지만
+    /// 새 접속은 그 경로로 더 이상 들어올 수 없다. 여기서 경로의 현재 파일이 우리가 bind한 바로 그 파일인지
+    /// (장치+inode 일치) 확인하고, 아니면 리스너를 내려 다음 `start()`가 다시 열 수 있게 한다.
+    /// `acceptQueue`에서 수행해 `acceptPending()`과 같은 fd를 동시에 건드리는 경쟁을 막는다.
     var isRunning: Bool {
-        lock.lock(); defer { lock.unlock() }
-        return listenFD >= 0
+        acceptQueue.sync {
+            lock.lock()
+            let fd = listenFD
+            let path = socketPath
+            let inode = listenInode
+            lock.unlock()
+            guard fd >= 0 else { return false }
+            guard let path, let inode else { return true }
+            var info = stat()
+            if lstat(path, &info) == 0, info.st_dev == inode.dev, info.st_ino == inode.ino {
+                return true
+            }
+            handleListenerFailure(expectedInode: inode)
+            return false
+        }
     }
 
     /// 성공하면 nil, 실패하면 사용자에게 보여줄 이유를 돌려준다.
@@ -53,6 +75,12 @@ final class BrowserBridgeServer: @unchecked Sendable {
             return "브라우저 연결 소켓을 열지 못했습니다(\(code))."
         }
         _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
+        var info = stat()
+        guard lstat(path, &info) == 0, (info.st_mode & S_IFMT) == S_IFSOCK, info.st_uid == getuid() else {
+            close(fd)
+            unlink(path)
+            return "브라우저 연결 소켓 정보를 확인하지 못했습니다(\(errno))."
+        }
 
         let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: acceptQueue)
         source.setEventHandler { [weak self] in self?.acceptPending() }
@@ -61,6 +89,7 @@ final class BrowserBridgeServer: @unchecked Sendable {
         acceptSource = source
         socketPath = path
         teamID = team
+        listenInode = (dev: info.st_dev, ino: info.st_ino)
         return nil
     }
 
@@ -73,6 +102,7 @@ final class BrowserBridgeServer: @unchecked Sendable {
         acceptSource = nil
         listenFD = -1
         socketPath = nil
+        listenInode = nil
         lock.unlock()
 
         source?.cancel()
@@ -82,10 +112,14 @@ final class BrowserBridgeServer: @unchecked Sendable {
         for connection in open { shutdown(connection, SHUT_RDWR) }
     }
 
-    /// 리스너 소켓만 죽었을 때(치명적 accept 오류 등) 리스너만 내린다. `stop()`과 달리 이미 접속된 연결
-    /// (`connections`)에는 손대지 않는다 — 그 연결들은 각자 스레드에서 독립적으로 계속 번역을 이어 간다.
-    /// 이후 `start()`를 다시 부르면(앱 쪽 자동 복구 트리거) 리스너만 다시 연다.
-    private func handleListenerFailure() {
+    /// 리스너 소켓만 죽었을 때(치명적 accept 오류, 또는 fd는 열려 있지만 바인드된 경로의 파일이 사라지거나
+    /// 다른 소켓으로 바뀐 경우) 리스너만 내린다. `stop()`과 달리 이미 접속된 연결(`connections`)에는 손대지
+    /// 않는다 — 그 연결들은 각자 스레드에서 독립적으로 계속 번역을 이어 간다. 이후 `start()`를 다시 부르면
+    /// (새로고침·깨어남·도우미의 복구 요청 같은 기존 트리거) 리스너만 다시 연다.
+    ///
+    /// `expectedInode`가 있으면(경로 불일치로 들어온 경우) 지우기 직전에 그 경로를 다시 확인해, 그 사이 다른
+    /// 프로세스가 같은 이름으로 만든 살아 있는 소켓을 우리가 지우는 일이 없게 한다.
+    private func handleListenerFailure(expectedInode: (dev: dev_t, ino: ino_t)? = nil) {
         lock.lock()
         guard listenFD >= 0 else { lock.unlock(); return }
         let source = acceptSource
@@ -94,11 +128,17 @@ final class BrowserBridgeServer: @unchecked Sendable {
         acceptSource = nil
         listenFD = -1
         socketPath = nil
+        listenInode = nil
         lock.unlock()
 
         source?.cancel()
         close(fd)
-        if let path { unlink(path) }
+        guard let path else { return }
+        if let expectedInode {
+            var info = stat()
+            guard lstat(path, &info) == 0, info.st_dev == expectedInode.dev, info.st_ino == expectedInode.ino else { return }
+        }
+        unlink(path)
     }
 
     // MARK: - 접속 처리
