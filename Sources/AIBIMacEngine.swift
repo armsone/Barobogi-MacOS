@@ -271,6 +271,8 @@ final class AIBINavigationGuard: NSObject, WKNavigationDelegate, WKUIDelegate {
     var onBlocked: (() -> Void)?
     var onFinish: (() -> Void)?
     var onFailure: (() -> Void)?
+    /// 화면 렌더러 프로세스가 끝났을 때(메인 웹 보기만 — 팝업 자식은 closePopup으로 따로 처리).
+    var onProcessTerminated: (() -> Void)?
 
     init(config: AIBIProviderConfig) { self.config = config }
 
@@ -304,6 +306,17 @@ final class AIBINavigationGuard: NSObject, WKNavigationDelegate, WKUIDelegate {
         if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled { return }
         if nsError.domain == "WebKitErrorDomain" && nsError.code == 102 { return }
         onFailure?()
+    }
+
+    /// 팝업(OAuth 자식) 종료는 그 팝업만 닫고 끝낸다 — 건강한 메인 작업을 중단시키지 않는다.
+    /// 메인 웹 보기 종료만 onProcessTerminated로 올린다(식별은 authPopups 등록 여부로 판정).
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        let key = ObjectIdentifier(webView)
+        if authPopups[key] != nil {
+            closePopup(key)
+            return
+        }
+        onProcessTerminated?()
     }
 
     private struct AuthPopup {
@@ -456,6 +469,7 @@ final class AIBIRunner {
     @ObservationIgnored private var runID: UUID?
     @ObservationIgnored private var blockedNavigation = false
     @ObservationIgnored private var navigationFailed = false
+    @ObservationIgnored private var processTerminated = false
     @ObservationIgnored private var runtimeFailureLogged = false
     @ObservationIgnored private var allowsFormatRetry = false
     /// 현재 실행을 시작한 기능(메일/화면). 실행이 없으면 nil.
@@ -481,6 +495,7 @@ final class AIBIRunner {
         self.sink = sink
         blockedNavigation = false
         navigationFailed = false
+        processTerminated = false
         runtimeFailureLogged = false
         self.allowsFormatRetry = allowsFormatRetry
         self.owner = owner
@@ -591,6 +606,10 @@ final class AIBIRunner {
                 log("browser_load_failed")
                 return .failed("네트워크 오류로 \(config.provider.title) 페이지를 열지 못했습니다. 인터넷 연결을 확인한 뒤 다시 시도하세요.")
             }
+            if processTerminated {
+                log("renderer_terminated")
+                return .failed(rendererTerminatedMessage(config))
+            }
             if blockedNavigation {
                 blockedNavigation = false
                 if status?.isVisible == false { return .needs(.login) }
@@ -628,6 +647,10 @@ final class AIBIRunner {
 
     private func injectAndSubmit(gen: UInt64) async -> Submission {
         guard let config, let webView else { return .cancelled }
+        if processTerminated {
+            log("renderer_terminated")
+            return .failed(rendererTerminatedMessage(config))
+        }
         guard !webView.isLoading else { return .needsManual }
         let authenticated = await AIBIRegistry.probeAuth(webView, config: config)
         guard isCurrent(gen) else { return .cancelled }
@@ -672,6 +695,10 @@ final class AIBIRunner {
         var inserted = false
         for attempt in 1...4 {
             guard isCurrent(gen) else { return .cancelled }
+            if processTerminated {
+                log("renderer_terminated")
+                return .failed(rendererTerminatedMessage(config))
+            }
             guard let currentURL = webView.url else { return .needsManual }
             if config.isAuth(currentURL) && !config.allowsScript(currentURL) { return .needsLogin }
             let result = await callRuntime("injectPrompt", [prompt, replaceOwnedDraft && attempt == 1], on: webView, gen: gen)
@@ -708,6 +735,10 @@ final class AIBIRunner {
         var attempts = 0
         while Date().timeIntervalSince(started) < 15 {
             guard isCurrent(gen) else { return .cancelled }
+            if processTerminated {
+                log("renderer_terminated")
+                return .failed(rendererTerminatedMessage(config))
+            }
             if !dispatched {
                 attempts += 1
                 let result = await callRuntime("submitPrompt", [attempts], on: webView, gen: gen)
@@ -756,6 +787,10 @@ final class AIBIRunner {
                 if let rejected { return .failed(rejected.reason) }
                 status?.manualError = "제한 시간(1:59) 안에 답변을 가져오지 못했습니다. 현재 답변 화면을 보존했습니다."
                 return await takeover(.manual, gen: gen, preserveBrowser: true) ?? .cancelled
+            }
+            if processTerminated {
+                log("renderer_terminated")
+                return .failed(rendererTerminatedMessage(config))
             }
             await pause(0.7)
             guard isCurrent(gen) else { return .cancelled }
@@ -855,14 +890,23 @@ final class AIBIRunner {
             setStage("\(config.provider.title) 보안 확인이 필요합니다")
         case .manual:
             setStage(status?.manualError == nil ? "자동 입력을 진행하지 못했습니다 — 수동으로 진행하세요" : "답변 형식을 확인해야 합니다 — 수동으로 진행하세요")
+            if processTerminated { return .failed(rendererTerminatedMessage(config)) }
             return await withCheckedContinuation { continuation in
-                if isCurrent(gen) { manualContinuation = continuation } else { continuation.resume(returning: .cancelled) }
+                guard isCurrent(gen), !processTerminated else {
+                    continuation.resume(returning: isCurrent(gen) ? .failed(rendererTerminatedMessage(config)) : .cancelled)
+                    return
+                }
+                manualContinuation = continuation
             }
         }
 
         // 로그인·보안 확인: 사용자가 끝낼 때까지 계정 표식을 확인한다(최대 10분).
         let deadline = Date().addingTimeInterval(600)
         while isCurrent(gen) && Date() < deadline {
+            if processTerminated {
+                log("renderer_terminated")
+                return .failed(rendererTerminatedMessage(config))
+            }
             await pause(1.0)
             guard isCurrent(gen), let webView else { return .cancelled }
             blockedNavigation = false
@@ -905,6 +949,8 @@ final class AIBIRunner {
     }
 
     private func makeWebView(interactive: Bool) -> AIBIWebView {
+        navigationFailed = false
+        processTerminated = false
         let webView = AIBIWebView(frame: NSRect(origin: .zero, size: AIBIHiddenSurface.viewport),
                                   configuration: AIBIRegistry.makeConfiguration())
         webView.interactive = interactive
@@ -919,6 +965,7 @@ final class AIBIRunner {
             }
             guardian.onFinish = { [weak self] in self?.log("browser_loaded") }
             guardian.onFailure = { [weak self] in self?.navigationFailed = true }
+            guardian.onProcessTerminated = { [weak self] in self?.handleProcessTerminated() }
             webView.navigationDelegate = guardian
             webView.uiDelegate = guardian
             navigationGuard = guardian
@@ -967,6 +1014,24 @@ final class AIBIRunner {
         return cachedPrompt
     }
 
+    /// 짧고 사실에 근거한 안내만 준다 — 원인(메모리 등)을 추측하거나 재시작을 약속하지 않는다.
+    private func rendererTerminatedMessage(_ config: AIBIProviderConfig) -> String {
+        "\(config.provider.title) 화면이 응답을 멈춰 요청을 중단했습니다. 다시 시도해 주세요."
+    }
+
+    /// 메인 웹 보기 렌더러 종료의 단일 처리 경로. processTerminated를 세우고(이후 canExecute가
+    /// 늦게 도착하는 JS 결과를 모두 막는다), 수동 전환 중 대기 중인 continuation이 있으면
+    /// 그 자리에서 실패로 정리해 무기한 대기를 막는다(세대는 바꾸지 않아 결과가 그대로 run()까지 전달된다).
+    private func handleProcessTerminated() {
+        guard !processTerminated else { return }
+        processTerminated = true
+        log("renderer_terminated")
+        guard let continuation = manualContinuation else { return }
+        manualContinuation = nil
+        let message = config.map(rendererTerminatedMessage) ?? "화면이 응답을 멈춰 요청을 중단했습니다. 다시 시도해 주세요."
+        continuation.resume(returning: .failed(message))
+    }
+
     private func setStage(_ stage: String) {
         if status?.stage != stage { status?.stage = stage }
     }
@@ -987,7 +1052,7 @@ final class AIBIRunner {
 
     /// 페이지 스크립트 실행 직전 네이티브 확인: 현재 작업·현재 웹 보기·로드 완료·공식 실행 origin(인증 경로 제외).
     private func canExecute(gen: UInt64, on webView: WKWebView) -> Bool {
-        guard isCurrent(gen), let config, self.webView === webView, !webView.isLoading,
+        guard isCurrent(gen), !processTerminated, let config, self.webView === webView, !webView.isLoading,
               let url = webView.url else { return false }
         return config.allowsScript(url)
     }
@@ -1030,8 +1095,8 @@ final class AIBIRunner {
                 else { continuation.resume(returning: nil) }
             }
         }
-        // 그사이 취소·웹 보기 교체가 있었으면 늦게 도착한 결과를 쓰지 않는다.
-        guard isCurrent(gen), self.webView === webView else { return nil }
+        // 그사이 취소·웹 보기 교체·렌더러 종료가 있었으면 늦게 도착한 결과를 쓰지 않는다.
+        guard isCurrent(gen), !processTerminated, self.webView === webView else { return nil }
         return value
     }
 
