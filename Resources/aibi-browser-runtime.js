@@ -219,14 +219,78 @@
     return true;
   }
 
+  const SEMANTIC_ATTACH_PATTERN = /attach|첨부|파일 등 추가|add (photos|files)|upload|업로드|사진/i;
+  const SEMANTIC_SEND_PATTERN = /send|submit|전송|보내기/i;
+  const SEMANTIC_EXCLUDED_PATTERN = /stop|중지|정지|중단|voice|음성|dictat|받아쓰기|model|모델|remove|delete|close|dismiss|삭제|제거|닫기/i;
+  const SEMANTIC_ROOT_MAX_DEPTH = 6;
+
+  function controlMeaning(el) {
+    return `${el.getAttribute('aria-label') || ''} ${el.getAttribute('data-testid') || ''} ${el.getAttribute('title') || ''}`;
+  }
+
+  /**
+   * Visible semantic attach/send controls inside a candidate root. Only controls matched by the
+   * provider's own trigger/submit selectors and carrying an explicit attach/send label count;
+   * voice, model and generic buttons never qualify.
+   */
+  function semanticControls(node, config) {
+    const matchesLabel = (el, pattern) => {
+      const meaning = controlMeaning(el);
+      return pattern.test(meaning) && !SEMANTIC_EXCLUDED_PATTERN.test(meaning);
+    };
+    const attach = queryAll(config.selectors.attachmentTrigger, node)
+      .filter(el => isVisible(el) && matchesLabel(el, SEMANTIC_ATTACH_PATTERN));
+    const send = queryAll(config.selectors.submitButton, node)
+      .filter(el => isVisible(el) && !SEMANTIC_ATTACH_PATTERN.test(controlMeaning(el)) && matchesLabel(el, SEMANTIC_SEND_PATTERN));
+    return { attach: attach.length, send: send.length };
+  }
+
+  function hasUniqueSemanticControl(node, config) {
+    const controls = semanticControls(node, config);
+    return controls.attach <= 1 && controls.send <= 1 && controls.attach + controls.send > 0;
+  }
+
+  function hasSingleVisibleEditor(node, config) {
+    return queryAll(config.selectors.promptInput, node).filter(isVisible).length === 1;
+  }
+
+  /**
+   * Nearest bounded ancestor of the active editor that holds exactly one editor and a unique
+   * visible semantic attach/send control. Roots containing history or document boundaries are
+   * rejected by isSafeComposerRoot; ambiguity stops the climb instead of widening it.
+   */
+  function semanticComposerRoot(input, config) {
+    let node = input.parentElement;
+    for (let depth = 0; node && depth < SEMANTIC_ROOT_MAX_DEPTH; depth += 1, node = node.parentElement) {
+      if (!isSafeComposerRoot(node, config)) return null;
+      if (!hasSingleVisibleEditor(node, config)) return false;
+      const controls = semanticControls(node, config);
+      if (controls.attach > 1 || controls.send > 1) return false;
+      if (controls.attach + controls.send > 0) return node;
+    }
+    return null;
+  }
+
   function composerRoot(config) {
     const input = queryFirst(config.selectors.promptInput);
     if (!input) return null;
-    const directCandidates = [
+    const explicitCandidates = [
       input.closest('form'),
       input.closest('[data-testid="composer"]'),
       input.closest('[class*="composer"]'),
-      input.closest('fieldset,[role="region"],[role="group"]'),
+      input.closest('fieldset,[role="region"],[role="group"]')
+    ];
+    for (const candidate of explicitCandidates) {
+      if (candidate && isSafeComposerRoot(candidate, config) && hasSingleVisibleEditor(candidate, config) && hasUniqueSemanticControl(candidate, config)) {
+        return candidate;
+      }
+    }
+    const semantic = semanticComposerRoot(input, config);
+    // Ambiguity is a hard boundary: legacy roots must not bypass this rejection.
+    if (semantic === false) return null;
+    if (semantic) return semantic;
+    const directCandidates = [
+      ...explicitCandidates,
       input.parentElement?.parentElement?.parentElement,
       input.parentElement?.parentElement,
       input.parentElement

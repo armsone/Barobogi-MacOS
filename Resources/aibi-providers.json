@@ -215,7 +215,8 @@
           "button[aria-label*='첨부']",
           "button[data-testid='composer-plus-btn']",
           "button[aria-label*='Add photos']",
-          "button[aria-label*='사진']"
+          "button[aria-label*='사진']",
+          "button[aria-label='파일 등 추가']"
         ],
         "attachmentMenuAction": [],
         "attachmentMenuActionText": [
@@ -229,7 +230,8 @@
           "button[aria-label*='uploaded image' i]",
           "button[aria-label*='업로드한 이미지']",
           "img[src*='/backend-api/estuary/content']",
-          "div[class*='attachment-tile']"
+          "div[class*='attachment-tile']",
+          "div[role='button']:has(img):has(> button[aria-label$=' 제거'])"
         ]
       },
       "quirks": {
