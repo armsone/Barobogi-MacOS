@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "AIBI Provider Configurations",
-  "version": "1.2.0",
-  "updatedAt": "2026-09-10",
+  "version": "1.2.1",
+  "updatedAt": "2026-10-17",
   "volatilityNotice": "Web application DOM structures change frequently. Maintain and update these selector chains independently of core orchestrator logic.",
   "providers": {
     "gemini": {
@@ -164,6 +164,7 @@
           "button[aria-label*='중지' i]"
         ],
         "assistantMessage": [
+          "[data-markdown-text-style='assistant-message']",
           "[data-message-author-role='assistant']",
           "div.agent-turn",
           "article[data-turn='assistant']",

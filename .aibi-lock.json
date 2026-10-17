@@ -17,11 +17,11 @@
           "source": "profiles/mailtranslator/distribution/macos/AISettingsView.swift"
         },
         "Resources/aibi-browser-runtime.js": {
-          "sha256": "5659b0551367d02b53977d09419256b261956c2da67b210749d2eac1cab5d833",
+          "sha256": "00cb50f945777957d1027f4d5704d048587a6f695ee5bc134bab2f8db2f46a44",
           "source": "profiles/mailtranslator/distribution/macos/aibi-browser-runtime.js"
         },
         "Resources/aibi-providers.json": {
-          "sha256": "e384c630de6a5ce0ef907b3df3cbcf0eea2cbc94668aa62ebbc70423bb079d81",
+          "sha256": "5dc553035f81ff64395e5660bece7d9ca64c5c33af255f960be34159856298d0",
           "source": "profiles/mailtranslator/distribution/macos/aibi-providers.json"
         }
       }

@@ -207,6 +207,8 @@
       '.font-claude-response',
       '.font-user-message',
       '[data-message-author-role]',
+      '[data-user-message-bubble]',
+      '[data-conversation-role]',
       ...(config?.selectors?.assistantMessage ? (Array.isArray(config.selectors.assistantMessage) ? config.selectors.assistantMessage : [config.selectors.assistantMessage]) : [])
     ];
     for (const selector of historySelectors) {
@@ -404,7 +406,7 @@
         response_heading_count: Math.min(1000, Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6')).filter(el => /^(ChatGPT 답변:|ChatGPT said:)$/.test((el.textContent || '').trim())).length),
         pre_count: Math.min(1000, document.querySelectorAll('pre').length),
         code_count: Math.min(1000, document.querySelectorAll('code').length),
-        user_message_present: document.querySelector('[data-message-author-role="user"]') ? 1 : 0,
+        user_message_present: document.querySelector('[data-message-author-role="user"], [data-user-message-bubble]') ? 1 : 0,
         uploading_count: root ? queryAll(['[role="progressbar"]', '[aria-busy="true"]', '.animate-spin'], root).filter(isVisible).length : 0,
       };
       const encoded = JSON.stringify(snapshot);
