@@ -505,6 +505,8 @@ final class TitleDragStripView: NSView {
     let translateShortcutHint = NSTextField(labelWithString: "↵")
     let originalShortcutHint = NSTextField(labelWithString: "↵/Space")
     let statusLabel = NSTextField(labelWithString: "")
+    /// 원화 환산에 기본 제공사 환율을 쓰는 동안만 보이는 작은 출처 링크("Rates by Exchangerate.dev"). 머리글만 마우스를 받으므로 여기에 둔다.
+    let fxAttributionButton = NSButton(title: "", target: nil, action: nil)
     /// 외부 AI 답변 대기 남은 시간(1:59 → 0:00)을 줄어드는 막대로 보여준다. 그 외에는 숨긴다.
     let remainingBar = NSProgressIndicator()
 
@@ -564,6 +566,16 @@ final class TitleDragStripView: NSView {
         translateShortcutHint.toolTip = translateSegment.toolTip
         originalShortcutHint.toolTip = originalSegment.toolTip
 
+        fxAttributionButton.isBordered = false
+        fxAttributionButton.font = .systemFont(ofSize: 10)
+        fxAttributionButton.attributedTitle = NSAttributedString(string: ExchangeRateStore.attributionText, attributes: [
+            .font: NSFont.systemFont(ofSize: 10),
+            .foregroundColor: NSColor(calibratedWhite: 0.7, alpha: 1),
+            .underlineStyle: NSUnderlineStyle.single.rawValue,
+        ])
+        fxAttributionButton.isHidden = true
+        fxAttributionButton.isEnabled = false
+
         remainingBar.style = .bar
         remainingBar.isIndeterminate = false
         remainingBar.controlSize = .small
@@ -571,10 +583,18 @@ final class TitleDragStripView: NSView {
         remainingBar.maxValue = 1
         remainingBar.isHidden = true
 
-        [closeButton, fullDisplayButton, restoreButton, statusLabel, remainingBar,
+        [closeButton, fullDisplayButton, restoreButton, statusLabel, fxAttributionButton, remainingBar,
          paletteButton, pinButton, lockButton, primaryButton, originalSegment, translateSegment,
          translateShortcutHint, originalShortcutHint].forEach(addSubview)
         toolTip = "이 줄의 빈 곳을 끌어 창을 이동합니다 (이동·크기 잠금 시 이동 불가). 더블클릭하면 겹쳐진 다른 앱 창의 크기에 맞춥니다"
+    }
+
+    /// 환율 출처 링크를 쓸 수 있는 상태인지(기본 제공사 환율이 있고 환산을 표시 중일 때). 실제 표시는 자리에 따라 layout이 정한다.
+    func setFXAttribution(available: Bool, detail: String) {
+        guard fxAttributionButton.isEnabled != available || fxAttributionButton.toolTip != detail else { return }
+        fxAttributionButton.isEnabled = available
+        fxAttributionButton.toolTip = detail
+        needsLayout = true
     }
 
     /// 취소 버튼과 원문/번역 전환 스위치는 같은 자리를 나눠 쓴다(한 번에 하나만 보인다).
@@ -678,7 +698,17 @@ final class TitleDragStripView: NSView {
             rightEnd -= 8
         }
         let statusHeight = statusLabel.intrinsicContentSize.height
-        let statusWidth = max(0, rightEnd - leftEnd)
+        var statusWidth = max(0, rightEnd - leftEnd)
+        // 제공사 약관상 출처 링크는 좁은 창에서도 숨기지 않는다: 상태 문구가 먼저 줄어들고 링크는 상태 줄 오른쪽 끝에 항상 남는다.
+        fxAttributionButton.sizeToFit()
+        let attributionWidth = min(fxAttributionButton.frame.width, statusWidth)
+        let showAttribution = fxAttributionButton.isEnabled && attributionWidth > 0
+        if showAttribution {
+            fxAttributionButton.frame = NSRect(x: leftEnd + statusWidth - attributionWidth, y: (h - fxAttributionButton.frame.height) / 2,
+                                               width: attributionWidth, height: fxAttributionButton.frame.height)
+            statusWidth -= attributionWidth + 6
+        }
+        fxAttributionButton.isHidden = !showAttribution
         statusLabel.frame = NSRect(x: leftEnd, y: (h - statusHeight) / 2, width: statusWidth, height: statusHeight)
     }
 
@@ -686,7 +716,7 @@ final class TitleDragStripView: NSView {
         let local = convert(point, from: superview)
         guard bounds.contains(local) else { return nil }
         for button in [closeButton, fullDisplayButton, restoreButton, paletteButton, lockButton, pinButton,
-                       primaryButton, originalSegment, translateSegment]
+                       primaryButton, originalSegment, translateSegment, fxAttributionButton]
         where !button.isHidden && button.frame.contains(local) {
             return button
         }

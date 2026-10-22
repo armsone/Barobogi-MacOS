@@ -74,6 +74,7 @@ struct FormattedBodyView: View {
                     showOCRBoxes: model.showOCRBoxes,
                     showOCRDetails: model.showOCRDetails,
                     pendingLabel: model.pendingLabel,
+                    rateRevision: ExchangeRateStore.shared.cache?.fetchedAt,
                     height: $height
                 )
                 .frame(height: height)
@@ -101,6 +102,8 @@ struct FormattedMailWebView: NSViewRepresentable {
     let showOCRDetails: Bool
     /// 대기 중인 OCR 캡션 문구(외부 AI는 실행 전까지 '번역 대기')
     let pendingLabel: String
+    /// 새 환율을 받으면 바뀌어 updateNSView→sync가 다시 불리게 하는 값(웹 보기에 주입하는 저장 환율의 판).
+    let rateRevision: Date?
     @Binding var height: CGFloat
 
     func makeCoordinator() -> Coordinator {
@@ -186,6 +189,7 @@ struct FormattedMailWebView: NSViewRepresentable {
         private var failed = false
         private var unitIDs: [String] = []
         private var sentMode: String?
+        private var sentFX: String?
         private var sentBoxes: Bool?
         private var sentDetails: Bool?
         private var sentUnits: [String: String] = [:]
@@ -318,6 +322,14 @@ struct FormattedMailWebView: NSViewRepresentable {
                 payload["mode"] = mode
                 sentMode = mode
             }
+            // 원화 환산: 저장된 환율 표만 주입한다(웹 보기는 외부 연결이 막혀 있고 아무것도 받아 오지 않는다). 바뀔 때만 보낸다.
+            let rates = ExchangeRateStore.shared
+            let fxSignature = rates.hasRates ? "\(rates.cache?.fetchedAt.timeIntervalSince1970 ?? 0)|\(model?.documentLanguageKey ?? "")" : "none"
+            if sentFX != fxSignature {
+                payload["fx"] = ["k": rates.hasRates ? rates.krwPer : [String: Double](), "d": rates.hasRates ? rates.detailText : "",
+                                 "l": model?.documentLanguageKey ?? ""] as [String: Any]
+                sentFX = fxSignature
+            }
             if sentBoxes != state.showOCRBoxes {
                 payload["boxes"] = state.showOCRBoxes
                 sentBoxes = state.showOCRBoxes
@@ -356,6 +368,7 @@ struct FormattedMailWebView: NSViewRepresentable {
                 guard let self else { return }
                 if case .success(let value) = result, (value as? NSNumber)?.boolValue == true { return }
                 // 반영되지 않았으면 다음 갱신 때 전체를 다시 보낸다.
+                self.sentFX = nil
                 self.sentMode = nil
                 self.sentBoxes = nil
                 self.sentDetails = nil
@@ -418,7 +431,11 @@ struct FormattedMailWebView: NSViewRepresentable {
                     let list: [[Any]] = regions.enumerated().map { index, region in
                         [index + 1, Double(region.box.minX), Double(region.box.minY), Double(region.box.width),
                          Double(region.box.height), region.text, Self.encode(state.segmentStates[region.id], pending: state.pendingLabel),
-                         region.backgroundHex, region.foregroundHex]
+                         region.backgroundHex, region.foregroundHex,
+                         // 글자마다 정확한 상자(순서대로 맞는 것만, 빠진 글자는 보간). 없으면 빈 배열 → 줄 단위 추정.
+                         (region.text.count <= 300
+                            ? CurrencyBubbleLayout.alignedGlyphBoxes(text: region.text, glyphBoxes: region.glyphBoxes, glyphTexts: region.glyphTexts) : nil)?
+                            .map { [Double($0.minX), Double($0.minY), Double($0.width), Double($0.height)] } ?? [] as [[Double]]]
                     }
                     payload["ocr"] = ["s": "done", "r": list]
                 }
@@ -625,9 +642,17 @@ final class MailAssetSchemeHandler: NSObject, WKURLSchemeHandler {
 // MARK: - 격리된 앱 world 스크립트
 
 enum MailWebScript {
+    /// 브라우저 확장과 같은 원화 환산 파서(fx.js, 앱 번들 리소스). 없으면 환산만 꺼진다.
+    /// 환율은 Swift가 저장된 값을 주입한다(웹 보기는 외부 연결이 차단돼 있고, 이 스크립트도 아무것도 가져오지 않는다).
+    private static let fxSource: String = {
+        guard let url = Bundle.main.url(forResource: "fx", withExtension: "js"),
+              let text = try? String(contentsOf: url, encoding: .utf8) else { return "" }
+        return text
+    }()
+
     static func source(token: String) -> String {
         let literal = (try? JSONEncoder().encode(token)).map { String(decoding: $0, as: UTF8.self) } ?? "\"\""
-        return template.replacingOccurrences(of: "__MT_TOKEN__", with: literal)
+        return fxSource + "\n" + template.replacingOccurrences(of: "__MT_TOKEN__", with: literal)
     }
 
     // 페이지 스크립트는 꺼져 있고, 이 코드는 WKContentWorld.defaultClient에서만 실행된다.
@@ -652,6 +677,10 @@ enum MailWebScript {
       let layer = null;
       let sentinel = null;
       let lastMetrics = '';
+      // 원화 환산(fx.js, 앱이 주입한 저장 환율만 사용): fxData = { k: 1단위당 원화 표, d: 상세, l: 문서 언어 }
+      const FX = window.BarobogiFX || null;
+      let fxData = null;
+      const priceUnits = [];
 
       function post(message) {
         message.token = TOKEN;
@@ -742,7 +771,12 @@ enum MailWebScript {
         const items = [];
         for (const u of collected) {
           const source = u.text.replace(INVISIBLE, '').replace(/\s+/g, ' ').trim();
-          if (!source || !LETTER.test(source)) continue;
+          if (!source) continue;
+          // 글자 없이 숫자·기호만 있는 칸("$1,200")은 번역 대상이 아니지만 원화 환산은 해야 하므로 따로 모아 둔다.
+          if (!LETTER.test(source)) {
+            if (/[\d０-９]/.test(source)) priceUnits.push({ nodes: u.nodes.slice(), orig: u.orig.slice(), fx: null });
+            continue;
+          }
           if (items.length >= 4000) break;
           // 번역문은 블록에 직접 속한 가장 긴 텍스트 노드(없으면 가장 긴 노드)에 넣고 나머지는 비운다.
           let host = 0, bestLen = -1, bestDirect = false;
@@ -760,7 +794,51 @@ enum MailWebScript {
       }
 
       // 2) 번역 상태 반영
+      // 원화 환산 주석: 금액 바로 뒤에 작은 회색 "(약 N원)"을 끼워 넣는다. 텍스트 노드를 쪼개므로 기록(rec.fx)에 남겨 두었다가
+      // 다시 그릴 때 먼저 걷어 원래 노드 값으로 되돌린다. 금액 뒤 위치만 쓰며 번역문·원문 문자열은 바꾸지 않는다.
+      function fxDrop(rec) {
+        if (!rec.fx) return;
+        for (const el of rec.fx.els) el.remove();
+        for (const tail of rec.fx.tails) tail.remove();
+        rec.fx = null;
+      }
+      function fxAnnotate(rec, nodes, ctxText) {
+        if (!FX || !fxData || !fxData.k || mode === 'original' || !nodes.length) return;
+        const datas = nodes.map((n) => n.data);
+        const joined = datas.join('');
+        if (!/[\d０-９]/.test(joined)) return;
+        const context = FX.makeContext({ htmlLang: document.documentElement.lang, textLang: fxData.l || '', text: ctxText });
+        const mentions = FX.findAmounts(joined, context, fxData.k).mentions.filter((m) => m.text);
+        if (!mentions.length) return;
+        const bases = [];
+        let acc = 0;
+        for (const d of datas) { bases.push(acc); acc += d.length; }
+        rec.fx = { els: [], tails: [] };
+        // 뒤쪽 금액부터 쪼개면 앞쪽 금액의 오프셋이 그대로 유효하다.
+        for (let m = mentions.length - 1; m >= 0; m--) {
+          const end = mentions[m].end;
+          let idx = nodes.length - 1;
+          for (let i = 0; i < nodes.length; i++) { if (end <= bases[i] + datas[i].length) { idx = i; break; } }
+          const node = nodes[idx];
+          if (!node.parentNode) continue;
+          const rest = node.splitText(Math.max(0, Math.min(node.data.length, end - bases[idx])));
+          const el = create('mt-fx', '(' + mentions[m].text + ')');
+          if (fxData.d) el.title = fxData.d;
+          rest.parentNode.insertBefore(el, rest);
+          rec.fx.els.push(el);
+          rec.fx.tails.push(rest);
+        }
+      }
+      function renderPrices() {
+        for (const rec of priceUnits) {
+          fxDrop(rec);
+          rec.nodes.forEach((node, i) => { if (node.data !== rec.orig[i]) node.data = rec.orig[i]; });
+          fxAnnotate(rec, rec.nodes, rec.orig.join(''));
+        }
+      }
+
       function applyUnit(u) {
+        fxDrop(u);
         for (let i = 0; i < u.nodes.length; i++) {
           if (u.nodes[i].data !== u.orig[i]) u.nodes[i].data = u.orig[i];
         }
@@ -768,11 +846,14 @@ enum MailWebScript {
         const st = states.get(u.id);
         if (!st || mode === 'original') return;
         const last = u.nodes[u.nodes.length - 1];
-        if (st[0] === 'd') {
+        if (st[0] === 's') {
+          fxAnnotate(u, u.nodes, u.orig.join('')); // 번역이 필요 없는 칸의 외국 금액
+        } else if (st[0] === 'd') {
           const text = String(st[1] === undefined ? '' : st[1]);
           if (mode === 'both') {
             u.extra = create('mt-tr', text);
             insertAfter(last, u.extra);
+            if (u.extra.firstChild) fxAnnotate({}, [u.extra.firstChild], u.orig.join('')); // 쪼갠 노드는 u.extra와 함께 지워진다
           } else {
             u.nodes.forEach((node, i) => {
               if (i === u.host) {
@@ -782,6 +863,7 @@ enum MailWebScript {
                 node.data = '';
               }
             });
+            fxAnnotate(u, [u.nodes[u.host]], u.orig.join(''));
           }
         } else if (st[0] === 'f') {
           u.extra = create('mt-warn', '⚠');
@@ -916,6 +998,63 @@ enum MailWebScript {
           layer.append(ov);
         }
       }
+      // 원화 환산 말풍선: 이미지 속 외국 금액 바로 아래(없으면 위)에 작은 반투명 흰색 둥근 칸. 원래 금액은 가리지 않는다.
+      // 숫자만 있는 영역도 포함한다(번역 오버레이는 글자가 있는 영역만 그린다).
+      function layoutBubbles(rect, ox, oy, regions) {
+        if (mode === 'original' || !FX || !fxData || !fxData.k) return;
+        const x0 = ox, y0 = oy, x1 = ox + rect.width, y1 = oy + rect.height;
+        const placed = [];
+        const hits = (a, b) => a.l < b.r && a.r > b.l && a.t < b.b && a.b > b.t;
+        for (const r of regions) {
+          const text = String(r[5]);
+          if (!/[\d０-９]/.test(text)) continue;
+          const bw = r[3] * rect.width, bh = r[4] * rect.height;
+          if (bw < 6 || bh < 6) continue;
+          const bx = ox + r[1] * rect.width, by = oy + r[2] * rect.height;
+          const context = FX.makeContext({ htmlLang: document.documentElement.lang, textLang: fxData.l || '', text });
+          const vertical = bh > bw * 1.5;
+          const glyphs = Array.isArray(r[9]) ? r[9] : [];
+          const chars = Array.from(text.replace(/\s+/gu, ''));
+          const rows = text.split('\n');
+          for (const m of FX.findAmounts(text, context, fxData.k).mentions) {
+            if (!m.text) continue;
+            let price = null;
+            // 정확한 글자 상자가 있으면 금액 글자들의 합집합, 없으면 금액이 든 줄만 잘라 쓴다(문단 전체 크기로 추정하지 않음).
+            if (glyphs.length === chars.length) {
+              const from = Array.from(text.slice(0, m.start).replace(/\s+/gu, '')).length;
+              const to = Array.from(text.slice(0, m.end).replace(/\s+/gu, '')).length;
+              const part = glyphs.slice(from, to);
+              if (part.length) {
+                const l = Math.min(...part.map((g) => g[0])), t = Math.min(...part.map((g) => g[1]));
+                const rr = Math.max(...part.map((g) => g[0] + g[2])), bb = Math.max(...part.map((g) => g[1] + g[3]));
+                if (rr > l && bb > t) price = { l: ox + l * rect.width, r: ox + rr * rect.width, t: oy + t * rect.height, b: oy + bb * rect.height };
+              }
+            }
+            if (!price) {
+              let row = 0, rowStart = 0;
+              for (let k = 0, at = 0; k < rows.length; k += 1) { if (m.start >= at) { row = k; rowStart = at; } at += rows[k].length + 1; }
+              const total = Math.max(1, rows[row].length);
+              const a = (m.start - rowStart) / total, z = Math.min(1, (m.end - rowStart) / total);
+              price = vertical
+                ? { l: bx + bw - (bw / rows.length) * (row + 1), r: bx + bw - (bw / rows.length) * row, t: by + bh * a, b: by + bh * z }
+                : { l: bx + bw * a, r: bx + bw * z, t: by + (bh / rows.length) * row, b: by + (bh / rows.length) * (row + 1) };
+            }
+            const el = create('mt-fxb', m.text);
+            el.style.setProperty('font-size', Math.max(9, Math.min(13, (price.b - price.t) * 0.6)) + 'px', 'important');
+            el.style.setProperty('left', '0px', 'important');
+            el.style.setProperty('top', '0px', 'important');
+            layer.append(el);
+            const w = el.offsetWidth, h = el.offsetHeight;
+            const left = Math.max(x0 + 1, Math.min(price.l, x1 - w - 1));
+            const spots = [price.b + 2, price.t - h - 2, y1 - h - 1].map((t) => ({ l: left, r: left + w, t, b: t + h }));
+            const fits = (c) => c.t >= y0 + 1 && c.b <= y1 - 1;
+            const pick = spots.find((c) => fits(c) && !placed.some((p) => hits(c, p))) ||
+              spots.find((c) => fits(c) && !hits(c, price)) || spots[0];
+            place(el, pick.l, pick.t);
+            placed.push(pick);
+          }
+        }
+      }
       function layoutOverlays() {
         if (!layer || !layer.isConnected) { layer = create('mt-layer'); document.documentElement.appendChild(layer); }
         layer.textContent = '';
@@ -927,6 +1066,7 @@ enum MailWebScript {
           const ox = rect.left + window.scrollX, oy = rect.top + window.scrollY;
           const rows = o.r.filter(isMeaningfulRegion);
           layoutTextOverlays(sl, rect, ox, oy, rows);
+          layoutBubbles(rect, ox, oy, o.r);
           if (!showBoxes) continue;
           for (const r of o.r) {
             const box = create('mt-box');
@@ -984,6 +1124,7 @@ enum MailWebScript {
         if (!started || !p || p.token !== TOKEN) return false;
         let all = false;
         if (typeof p.mode === 'string' && p.mode !== mode) { mode = p.mode; all = true; }
+        if (p.fx && typeof p.fx === 'object') { fxData = p.fx; all = true; }
         if (typeof p.boxes === 'boolean') showBoxes = p.boxes;
         if (typeof p.details === 'boolean') showDetails = p.details;
         if (p.units && typeof p.units === 'object') {
@@ -992,7 +1133,7 @@ enum MailWebScript {
             if (!all) { const u = units.get(id); if (u) applyUnit(u); }
           }
         }
-        if (all) units.forEach(applyUnit);
+        if (all) { units.forEach(applyUnit); renderPrices(); }
         if (p.slots && typeof p.slots === 'object') {
           for (const sl of slots) {
             if (Object.prototype.hasOwnProperty.call(p.slots, sl.key)) sl.data = p.slots[sl.key];

@@ -64,6 +64,26 @@ enum BrowserEngineError: Error {
 protocol BrowserTextTranslating: AnyObject, Sendable {
     func supportedLanguageIDs() async -> [String]
     func translate(_ texts: [String], source: String, target: String) async throws -> [String?]
+    /// partial: 항목이 하나씩 끝나는 대로 (입력 안 위치, 번역문)을 알린다. 전체 결과 배열은 끝에 그대로 돌려준다.
+    /// 부분 전달을 지원하지 않는 번역기는 알리지 않는다(최종 배열이 전부다).
+    func translate(_ texts: [String], source: String, target: String, partial: BrowserPartialHandler?) async throws -> [String?]
+}
+
+extension BrowserTextTranslating {
+    func translate(_ texts: [String], source: String, target: String, partial: BrowserPartialHandler?) async throws -> [String?] {
+        try await translate(texts, source: source, target: target)
+    }
+}
+
+/// 끝난 항목의 (입력 안 위치, 번역문). 번역문은 확장이 화면에 바로 쓸 값이며 로그에는 남기지 않는다.
+typealias BrowserPartialHandler = @Sendable ([(index: Int, text: String)]) -> Void
+
+/// 브라우저 "언어팩" 버튼: 번역 언어 내려받기는 시스템 설정(일반 › 언어 및 지역 › 번역 언어)에서 모든 앱이 공유한다.
+/// 번역 언어 하위 화면의 공식 딥링크는 확인되지 않아 만들지 않고, 언어 및 지역 창만 연다.
+enum BrowserLanguageSettings {
+    static let regionURL = URL(string: "x-apple.systempreferences:com.apple.Localization-Settings.extension")!
+    static let guidance = "시스템 설정 › 일반 › 언어 및 지역을 열었습니다. 아래쪽 '번역 언어'를 눌러 언어를 내려받으세요(받은 언어는 다른 앱과 공유됩니다)."
+    static let failure = "시스템 설정을 열지 못했습니다. 시스템 설정 › 일반 › 언어 및 지역 › 번역 언어를 직접 열어 주세요."
 }
 
 /// 요청 하나의 중간 진행(확장이 요청에 progress: true를 실었을 때만 같은 id의 type "progress" 프레임으로 보낸다).
@@ -72,6 +92,8 @@ struct BrowserProgress: Sendable {
     let phase: String
     var step: String? = nil
     var counts: [String: Int] = [:]
+    /// phase "partial"일 때만: 요청 texts 안 위치와 번역문(끝난 항목만)
+    var items: [(index: Int, text: String)] = []
 }
 
 typealias BrowserProgressHandler = @Sendable (BrowserProgress) -> Void
@@ -422,7 +444,9 @@ actor BrowserEngine {
                     guard !Task.isCancelled else { return }
                     var frame: [String: Any] = ["type": "progress", "id": id, "phase": update.phase, "counts": update.counts]
                     if let step = update.step { frame["step"] = step }
-                    if let data = try? JSONSerialization.data(withJSONObject: frame) { emit(data) }
+                    if !update.items.isEmpty { frame["items"] = update.items.map { ["i": $0.index, "t": $0.text] as [String: Any] } }
+                    // 부분 프레임이 한 프레임 상한을 넘으면 건너뛴다(최종 응답이 전부를 담는다).
+                    if let data = try? JSONSerialization.data(withJSONObject: frame), data.count <= BrowserBridge.maxOutgoingFrame { emit(data) }
                 }
             }
             let task = Task { [progress] in await self.run(request, id: id, progress: progress) }
@@ -467,8 +491,11 @@ actor BrowserEngine {
                 response = object
             case .refine(_, let target, let items):
                 let refined = try await refineItems(items, target: target)
+                // meta: 이번 요청이 실제로 돌았는지(fresh), 지난 결과를 재사용했는지(hit)를 개수로만 알린다(옛 확장은 무시).
                 response = ["type": "refineResult", "ok": true, "id": id,
-                            "items": refined.map { ["k": $0.key, "t": $0.value] }]
+                            "items": refined.items.map { ["k": $0.key, "t": $0.value] },
+                            "meta": ["sel": refined.selected, "hit": refined.cacheHit, "fresh": refined.fresh,
+                                     "changed": refined.items.count, "ms": refined.ms, "out": refined.outcome]]
             default:
                 throw BrowserEngineError.badRequest("종류")
             }
@@ -531,6 +558,15 @@ actor BrowserEngine {
         let totalItems = sendable.count
         let totalChars = sendable.reduce(0) { $0 + texts[$1].utf16.count }
         var doneItems = 0
+        let diagnosticRequestID = OnboardDiagnostics.newRequestID()
+        var diagnosticBatch = 0
+        let diagnosticBatches = order.reduce(0) { $0 + (((groups[$1] ?? []).count + Self.batchSize - 1) / Self.batchSize) }
+        if !isExternal {
+            OnboardDiagnostics.record("request", [
+                "request": diagnosticRequestID, "engine": engine, "target": target.rawValue, "items": totalItems,
+                "utf16": totalChars, "batches": diagnosticBatches, "batchSize": Self.batchSize, "inputItems": texts.count,
+                "languageGroups": order.map { "\($0):\((groups[$0] ?? []).count)" }])
+        }
         if !isExternal, totalItems > 0 {
             progress?(BrowserProgress(phase: "translating", counts: ["totalItems": totalItems, "totalChars": totalChars]))
         }
@@ -558,7 +594,25 @@ actor BrowserEngine {
                                                               progress: relay)
                         doneItems += chunk.count
                     } else {
-                        output = try await translator.translate(chunk.map { texts[$0] }, source: key, target: target.rawValue)
+                        let batchTexts = chunk.map { texts[$0] }
+                        // 끝나는 항목을 요청 전체 위치로 바꿔 바로 알린다(진행 프레임을 받겠다고 한 요청만). 최종 배열은 그대로 쓴다.
+                        let sourceTexts = texts
+                        let partial: BrowserPartialHandler? = progress.map { progress in
+                            { items in
+                                let mapped: [(index: Int, text: String)] = items.compactMap { item in
+                                    guard chunk.indices.contains(item.index) else { return nil }
+                                    let index = chunk[item.index]
+                                    let text = target == .korean ? BrowserMenuTranslation.korean(sourceTexts[index]) ?? item.text : item.text
+                                    return (index, text)
+                                }
+                                if !mapped.isEmpty { progress(BrowserProgress(phase: "partial", items: mapped)) }
+                            }
+                        }
+                        output = try await OnboardDiagnostics.$context.withValue(
+                            OnboardDiagnostics.Context(requestID: diagnosticRequestID, batch: diagnosticBatch, batches: diagnosticBatches)) {
+                            try await translator.translate(batchTexts, source: key, target: target.rawValue, partial: partial)
+                        }
+                        diagnosticBatch += 1
                     }
                     for (offset, index) in chunk.enumerated() where offset < output.count {
                         results[index] = engine == BrowserRequest.localEngine && target == .korean
@@ -602,9 +656,32 @@ actor BrowserEngine {
 
     // MARK: 다듬기 후속 요청 (앱 본체의 Chrome·Whale 전용, Mac 기본 번역 결과만)
 
-    private func refineItems(_ items: [BrowserRefineItem], target: AppLanguage) async throws -> [String: String] {
-        guard let refiner, refiner.isAvailable else { throw BrowserEngineError.refineFailed(.unavailable) }
-        guard AppleTranslationRefiner.supportsTarget(target.rawValue) else { throw BrowserEngineError.refineFailed(.unsupportedLanguage) }
+    private struct RefineOutcome {
+        var items: [String: String]
+        var selected: Int
+        var cacheHit: Int
+        var fresh: Int
+        var ms: Int
+        /// ran_changed | ran_nochange | all_cached(전부 재사용 — 모델을 돌리지 않음)
+        var outcome: String
+    }
+
+    /// 다듬기 요청의 개수·결과 코드만 비공개 로그에 남긴다(원문·번역문·주소 없음).
+    private func recordRefine(selected: Int, hit: Int, fresh: Int, changed: Int, outcome: String, since start: ContinuousClock.Instant) {
+        OnboardDiagnostics.record("refine", ["selected": selected, "cacheHit": hit, "fresh": fresh, "changed": changed,
+                                             "outcome": outcome, "totalMs": OnboardDiagnostics.milliseconds(ContinuousClock.now - start)])
+    }
+
+    private func refineItems(_ items: [BrowserRefineItem], target: AppLanguage) async throws -> RefineOutcome {
+        let start = ContinuousClock.now
+        guard let refiner, refiner.isAvailable else {
+            recordRefine(selected: items.count, hit: 0, fresh: 0, changed: 0, outcome: "unavailable", since: start)
+            throw BrowserEngineError.refineFailed(.unavailable)
+        }
+        guard AppleTranslationRefiner.supportsTarget(target.rawValue) else {
+            recordRefine(selected: items.count, hit: 0, fresh: 0, changed: 0, outcome: "unsupported_language", since: start)
+            throw BrowserEngineError.refineFailed(.unsupportedLanguage)
+        }
         // 재캡처·재배치 때 같은 그림의 같은 초안이 다시 오면 기기 내 모델을 다시 돌리지 않고 지난 결과(바꾸지 않음 포함)를 쓴다.
         var result: [String: String] = [:]
         var pending: [BrowserRefineItem] = []
@@ -615,14 +692,30 @@ actor BrowserEngine {
                 pending.append(item)
             }
         }
-        guard !pending.isEmpty else { return result }
-        let refined = try await refiner.refine(pending, targetLanguageName: target.displayNameKorean)
+        let hits = items.count - pending.count
+        guard !pending.isEmpty else {
+            recordRefine(selected: items.count, hit: hits, fresh: 0, changed: result.count, outcome: "all_cached", since: start)
+            return RefineOutcome(items: result, selected: items.count, cacheHit: hits, fresh: 0,
+                                 ms: OnboardDiagnostics.milliseconds(ContinuousClock.now - start), outcome: "all_cached")
+        }
+        let refined: [String: String]
+        do {
+            refined = try await refiner.refine(pending, targetLanguageName: target.displayNameKorean)
+        } catch {
+            // 실패는 캐시에 남기지 않는다(다음 요청이 다시 돈다).
+            let code = (error as? AppleTranslationRefiner.Failure)?.rawValue ?? (error is CancellationError ? "cancelled" : "error")
+            recordRefine(selected: items.count, hit: hits, fresh: pending.count, changed: 0, outcome: "failed_\(code)", since: start)
+            throw error
+        }
         for item in pending {
             let text = refined[item.key]
             if let text { result[item.key] = text }
             storeRefined(Self.refineCacheKey(item, target: target), text)
         }
-        return result
+        let outcome = result.isEmpty ? "ran_nochange" : "ran_changed"
+        recordRefine(selected: items.count, hit: hits, fresh: pending.count, changed: result.count, outcome: outcome, since: start)
+        return RefineOutcome(items: result, selected: items.count, cacheHit: hits, fresh: pending.count,
+                             ms: OnboardDiagnostics.milliseconds(ContinuousClock.now - start), outcome: outcome)
     }
 
     /// 다듬기 결과 캐시: 메모리에만 두고(디스크·로그에 남기지 않음) 오래된 것부터 버린다. 기기 내 모델 결과만 담는다
@@ -909,6 +1002,35 @@ actor BrowserEngine {
                                       "h": rounded(patch.height), "d": encoded]
             restorationBudget -= encoded.count
         }
+        // 원화 환산 후보: 번역 조각이 없는 줄(숫자·통화 기호만 있어 번역 대상이 아닌 가격 줄 등)의 위치·인식 원문·글자 상자만 따로 보낸다.
+        // 확장은 이 줄에서 외국 금액을 찾아 금액 바로 아래에 말풍선을 놓는다(번역문·가림 조각은 없고 원본 그림은 그대로).
+        // 글자 상자는 인식 원문의 공백 아닌 글자와 개수까지 맞을 때만 싣는다(맞지 않으면 확장이 줄 상자 비율로 대신한다).
+        var fxByKey: [String: [[String: Any]]] = [:]
+        for crop in crops {
+            let region = crop.region, rect = crop.rect
+            func mapFXRect(_ r: CGRect) -> CGRect {
+                let px = (rect.minX + r.minX * rect.width) / sx
+                let py = (rect.minY + r.minY * rect.height) / sy
+                return CGRect(x: (px - region.x) / region.w, y: (py - region.y) / region.h,
+                              width: r.width * rect.width / sx / region.w, height: r.height * rect.height / sy / region.h)
+            }
+            for item in crop.regions where !candidateIDs.contains(item.id) && CurrencyParser.mightContainAmount(item.text) {
+                if let swatchGuard, swatchGuard.intersects(pixelRect(item.box, in: rect)) { continue }
+                guard fxByKey[region.k, default: []].count < 48 else { break }
+                let box = mapFXRect(item.box)
+                var dict: [String: Any] = ["x": rounded(box.minX), "y": rounded(box.minY), "w": rounded(box.width), "h": rounded(box.height),
+                                           "o": String(item.text.prefix(300))]
+                // 글자마다 정확한 상자를 싣는다: 순서대로 맞는 상자만 쓰고 빠진 글자는 이웃 상자 사이로 보간한다(문단 크기 추정을 피함).
+                let letters = item.text.filter { !$0.isWhitespace }
+                if item.text.count <= 300, letters.count <= glyphBudget,
+                   let aligned = CurrencyBubbleLayout.alignedGlyphBoxes(text: item.text, glyphBoxes: item.glyphBoxes, glyphTexts: item.glyphTexts) {
+                    dict["g"] = boxes(aligned.map(mapFXRect))
+                    dict["gl"] = String(letters.map { $0.isLetter || $0.isNumber ? "1" : "0" })
+                    glyphBudget -= aligned.count
+                }
+                fxByKey[region.k, default: []].append(dict)
+            }
+        }
         for entry in drawn { itemsByKey[entry.key, default: []].append(entry.dict) }
         // 번역 성공 여부와 무관하게(건너뛴 조각 포함) 이미지마다 인식한 언어 개수를 센다.
         var langCountsByKey: [String: [String: Int]] = [:]
@@ -916,7 +1038,11 @@ actor BrowserEngine {
             guard let lang else { continue }
             langCountsByKey[item.imageKey, default: [:]][lang, default: 0] += 1
         }
-        let images: [[String: Any]] = keys.map { ["k": $0, "items": itemsByKey[$0] ?? [], "langs": langCountsByKey[$0] ?? [:]] }
+        let images: [[String: Any]] = keys.map { key in
+            var image: [String: Any] = ["k": key, "items": itemsByKey[key] ?? [], "langs": langCountsByKey[key] ?? [:]]
+            if let fx = fxByKey[key], !fx.isEmpty { image["fx"] = fx }
+            return image
+        }
         lap("encode")
         return (images, missing, warning, measured, timing, companionResults)
     }
@@ -1174,6 +1300,54 @@ enum BrowserImagePhraseTranslation {
     }
 }
 
+/// 진단 전용: 온보드 번역 요청의 실제 선택 전략·실패 사유·구간 시간을 JSON Lines로 남긴다(동작에는 영향 없음).
+/// 원문·번역문·URL·이미지·자격 증명은 기록하지 않고 개수·글자 수·언어 코드·오류 도메인/코드만 쓴다.
+enum OnboardDiagnostics {
+    struct Context: Sendable { let requestID: String; let batch: Int; let batches: Int }
+    @TaskLocal static var context: Context?
+
+    static let fileURL = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Logs/ScreenTranslator/onboard-performance.jsonl")
+    private static let queue = DispatchQueue(label: "com.local.screentranslator.onboard-diagnostics")
+    private static let formatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        formatter.timeZone = .current
+        return formatter
+    }()
+
+    static func newRequestID() -> String { String(UUID().uuidString.prefix(8)).lowercased() }
+
+    static func milliseconds(_ duration: Duration) -> Int {
+        Int(duration.components.seconds) * 1000 + Int(duration.components.attoseconds / 1_000_000_000_000_000)
+    }
+
+    static func errorFields(_ error: Error) -> [String: Any] {
+        let ns = error as NSError
+        return ["errorDomain": ns.domain, "errorCode": ns.code]
+    }
+
+    /// 이벤트마다 열어서 덧붙이고 닫는다(append 후 즉시 flush).
+    static func record(_ event: String, _ fields: [String: Any]) {
+        var line = fields
+        line["event"] = event
+        line["pid"] = Int(ProcessInfo.processInfo.processIdentifier)
+        line["app"] = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        queue.async {
+            line["ts"] = formatter.string(from: Date())
+            guard let data = try? JSONSerialization.data(withJSONObject: line, options: [.sortedKeys]) else { return }
+            let manager = FileManager.default
+            try? manager.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if !manager.fileExists(atPath: fileURL.path) { manager.createFile(atPath: fileURL.path, contents: nil) }
+            guard let handle = try? FileHandle(forWritingTo: fileURL) else { return }
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: data + Data([0x0A]))
+            try? handle.synchronize()
+        }
+    }
+}
+
 /// 설치된 언어 팩만 쓰는 TranslationSession(installedSource:target:)을 언어 조합마다 재사용한다. 화면(UI)이 필요 없어
 /// 앱이 화면 번역 창을 띄우지 않은 채로, 또 Safari 확장 안에서도 동작한다. 언어 팩이 없으면 내려받기 창을
 /// 숨은 채로 띄우지 않고 실행 가능한 안내 오류를 낸다. 같은 세션에 동시에 요청하지 않도록 조합마다 차례로 처리한다.
@@ -1182,6 +1356,8 @@ actor BrowserDirectTranslator: BrowserTextTranslating {
     private static let maxSessions = 6
     private var sessions: [String: TranslationSession] = [:]
     private var sessionOrder: [String] = []
+    /// 진단 전용: 언어 조합별로 마지막에 만든 세션의 전략과 선택 사유
+    private var sessionInfo: [String: (strategy: String, reason: String)] = [:]
     private var busyKeys: Set<String> = []
     private var waiters: [String: [CheckedContinuation<Void, Never>]] = [:]
 
@@ -1190,6 +1366,26 @@ actor BrowserDirectTranslator: BrowserTextTranslating {
     }
 
     func translate(_ texts: [String], source: String, target: String) async throws -> [String?] {
+        try await translate(texts, source: source, target: target, partial: nil)
+    }
+
+    /// 부분 전달: 같은 요청 배열을 translate(batch:)로 보내 한 항목씩 끝나는 대로 알린다(묶음 크기·세션 전략은 그대로).
+    private func collect(_ session: TranslationSession, _ requests: [TranslationSession.Request], partial: BrowserPartialHandler?,
+                         started: ContinuousClock.Instant, stats: inout (firstMs: Int?, count: Int)) async throws -> [TranslationSession.Response] {
+        guard let partial else { return try await session.translations(from: requests) }
+        var responses: [TranslationSession.Response] = []
+        for try await response in session.translate(batch: requests) {
+            try Task.checkCancellation()
+            responses.append(response)
+            guard let identifier = response.clientIdentifier, let index = Int(identifier), requests.indices.contains(index) else { continue }
+            if stats.firstMs == nil { stats.firstMs = OnboardDiagnostics.milliseconds(ContinuousClock.now - started) }
+            stats.count += 1
+            partial([(index, response.targetText)])
+        }
+        return responses
+    }
+
+    func translate(_ texts: [String], source: String, target: String, partial: BrowserPartialHandler?) async throws -> [String?] {
         let key = "\(source)>\(target)"
         let clock = ContinuousClock()
         let queueStart = clock.now
@@ -1197,15 +1393,42 @@ actor BrowserDirectTranslator: BrowserTextTranslating {
         let queueDuration = clock.now - queueStart
         defer { release(key) }
         try Task.checkCancellation()
+        var diagnostic: [String: Any] = [
+            "request": OnboardDiagnostics.context?.requestID ?? "none", "batch": OnboardDiagnostics.context?.batch ?? -1,
+            "batches": OnboardDiagnostics.context?.batches ?? -1, "source": source, "target": target, "items": texts.count,
+            "utf16": texts.reduce(0) { $0 + $1.utf16.count }, "queueMs": OnboardDiagnostics.milliseconds(queueDuration),
+            "sessionCacheHit": sessions[key] != nil, "outcome": "error"]
         let preparationStart = clock.now
-        let session = try await session(for: key, source: source, target: target)
+        let session: TranslationSession
+        do {
+            session = try await self.session(for: key, source: source, target: target)
+        } catch {
+            diagnostic["outcome"] = "prepare_failed"
+            diagnostic["prepareMs"] = OnboardDiagnostics.milliseconds(clock.now - preparationStart)
+            diagnostic.merge(OnboardDiagnostics.errorFields(error)) { $1 }
+            OnboardDiagnostics.record("onboard", diagnostic)
+            throw error
+        }
         let preparationDuration = clock.now - preparationStart
+        let info = sessionInfo[key]
+        diagnostic["strategy"] = info?.strategy ?? "unknown"
+        diagnostic["strategyReason"] = info?.reason ?? "unknown"
+        diagnostic["prepareMs"] = OnboardDiagnostics.milliseconds(preparationDuration)
         let translationStart = clock.now
+        var partialStats: (firstMs: Int?, count: Int) = (nil, 0)
         defer {
             let translationDuration = clock.now - translationStart
+            if partial != nil {
+                diagnostic["streaming"] = true
+                diagnostic["partials"] = partialStats.count
+                if let first = partialStats.firstMs { diagnostic["firstPartialMs"] = first }
+            }
             func milliseconds(_ duration: Duration) -> Int {
                 Int(duration.components.seconds) * 1000 + Int(duration.components.attoseconds / 1_000_000_000_000_000)
             }
+            diagnostic["inferenceMs"] = milliseconds(translationDuration)
+            if Task.isCancelled, diagnostic["outcome"] as? String == "error" { diagnostic["outcome"] = "cancelled" }
+            OnboardDiagnostics.record("onboard", diagnostic)
             // 처리 시간과 개수만 기록한다. 번역문·원문·언어·요청 식별자는 기록하지 않는다.
             Logger(subsystem: "com.local.screentranslator", category: "TranslationPerformance")
                 .info("Onboard queue_ms=\(milliseconds(queueDuration), privacy: .public) preparation_ms=\(milliseconds(preparationDuration), privacy: .public) translation_ms=\(milliseconds(translationDuration), privacy: .public) items=\(texts.count, privacy: .public)")
@@ -1213,28 +1436,47 @@ actor BrowserDirectTranslator: BrowserTextTranslating {
         let requests = texts.enumerated().map { TranslationSession.Request(sourceText: $0.element, clientIdentifier: String($0.offset)) }
         let responses: [TranslationSession.Response]
         do {
-            responses = try await session.translations(from: requests)
+            responses = try await collect(session, requests, partial: partial, started: translationStart, stats: &partialStats)
+            diagnostic["outcome"] = "ok"
         } catch {
+            diagnostic["firstAttemptFailed"] = true
+            let firstFailure = OnboardDiagnostics.errorFields(error)
+            diagnostic["firstErrorDomain"] = firstFailure["errorDomain"]
+            diagnostic["firstErrorCode"] = firstFailure["errorCode"]
             // 세션이 망가졌을 수 있으므로 다음 요청에서 새로 만든다.
             dropSession(key)
             if TranslationError.notInstalled ~= error {
                 try Task.checkCancellation()
-                let installed = await LanguageAvailability().status(from: Locale.Language(identifier: source),
-                                                                   to: Locale.Language(identifier: target)) == .installed
-                guard installed else { throw BrowserEngineError.languageNotInstalled("\(source)→\(target)") }
-                // 설치 여부와 번역 세션의 응답이 모순되면 재다운로드를 요구하지 않는다. 빠른 전략의 세션을
-                // 버리고 설치된 팩을 쓰는 새 기본 세션에서 딱 한 번 재시도한다.
-                let retry = try await self.session(for: key, source: source, target: target, defaultStrategy: true)
-                do { responses = try await retry.translations(from: requests) }
+                // 빠른 전략(lowLatency) 팩이 실제로 없으면 내려받기를 안내한다. 기본(느린) 전략으로 바꿔 번역하지 않는다.
+                let installed = await makeAvailability().status(from: Locale.Language(identifier: source),
+                                                                to: Locale.Language(identifier: target)) == .installed
+                diagnostic["fastPackInstalled"] = installed
+                guard installed else {
+                    diagnostic["outcome"] = "language_not_installed"
+                    throw BrowserEngineError.languageNotInstalled("\(source)→\(target)")
+                }
+                // 설치 여부와 번역 세션의 응답이 모순되는 일시적 오류이므로, 같은 전략(lowLatency)의 새 세션에서 딱 한 번만 재시도한다.
+                diagnostic["retried"] = true
+                let retry = try await self.session(for: key, source: source, target: target)
+                diagnostic["retryStrategy"] = sessionInfo[key]?.strategy ?? "unknown"
+                do {
+                    responses = try await collect(retry, requests, partial: partial, started: translationStart, stats: &partialStats)
+                    diagnostic["outcome"] = "ok_after_retry"
+                }
                 catch {
                     dropSession(key)
+                    diagnostic.merge(OnboardDiagnostics.errorFields(error)) { $1 }
                     try Task.checkCancellation()
                     if TranslationError.notInstalled ~= error {
+                        diagnostic["outcome"] = "retry_not_installed"
                         throw BrowserEngineError.translationFailed("언어팩은 설치되어 있지만 번역 서비스가 응답하지 않습니다. 다시 번역하세요.")
                     }
+                    diagnostic["outcome"] = "retry_failed"
                     throw error
                 }
             } else {
+                diagnostic.merge(OnboardDiagnostics.errorFields(error)) { $1 }
+                diagnostic["outcome"] = "failed"
                 if TranslationError.unsupportedLanguagePairing ~= error { throw BrowserEngineError.unsupportedPair("\(source)→\(target)") }
                 throw error
             }
@@ -1247,25 +1489,23 @@ actor BrowserDirectTranslator: BrowserTextTranslating {
         return output
     }
 
-    private func session(for key: String, source: String, target: String, defaultStrategy: Bool = false) async throws -> TranslationSession {
+    private func session(for key: String, source: String, target: String) async throws -> TranslationSession {
         if let session = sessions[key] { return session }
         let from = Locale.Language(identifier: source), to = Locale.Language(identifier: target)
-        var useDefault = defaultStrategy
-        let availability = useDefault ? LanguageAvailability() : makeAvailability()
-        switch await availability.status(from: from, to: to) {
+        switch await makeAvailability().status(from: from, to: to) {
         case .installed: break
-        case .supported:
-            guard !useDefault, await LanguageAvailability().status(from: from, to: to) == .installed
-            else { throw BrowserEngineError.languageNotInstalled("\(source)→\(target)") }
-            useDefault = true
+        case .supported: throw BrowserEngineError.languageNotInstalled("\(source)→\(target)")
         case .unsupported: throw BrowserEngineError.unsupportedPair("\(source)→\(target)")
         @unknown default: throw BrowserEngineError.unsupportedPair("\(source)→\(target)")
         }
+        // 빠른 전략이 있는 macOS에서는 항상 lowLatency 세션만 만든다(기본 전략으로 대체해 캐시에 남기지 않는다).
         let session: TranslationSession
-        if #available(macOS 26.4, *), !useDefault {
+        if #available(macOS 26.4, *) {
             session = TranslationSession(installedSource: from, target: to, preferredStrategy: .lowLatency)
+            sessionInfo[key] = ("lowLatency", "macOS>=26.4, installed")
         } else {
             session = TranslationSession(installedSource: from, target: to)
+            sessionInfo[key] = ("default", "macOS<26.4")
         }
         sessions[key] = session
         sessionOrder.append(key)
@@ -1282,6 +1522,7 @@ actor BrowserDirectTranslator: BrowserTextTranslating {
 
     private func dropSession(_ key: String) {
         sessions[key] = nil
+        sessionInfo[key] = nil
         sessionOrder.removeAll { $0 == key }
     }
 

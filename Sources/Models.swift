@@ -137,6 +137,10 @@ struct OCRLine: Identifiable {
     let boundingBox: CGRect
     /// 원본 글자 획 통계로 추정한 글꼴 갈래("gothic"/"myeongjo"/"hand"). 표본 부족·애매함이면 nil(미판별).
     var fontStyleHint: String? = nil
+    /// 공백이 아닌 글자마다의 잉크 상자(boundingBox와 같은 Vision 정규화 좌표, 원점 좌하단)와 그 글자. 원화 환산 말풍선이
+    /// 금액 칸을 찾는 데만 쓴다. 상자를 못 구하면 비어 있다(줄 상자 비율로 대신한다).
+    var glyphBoxes: [CGRect] = []
+    var glyphTexts: [String] = []
 }
 
 /// 0...1 범위 RGB. 캡처 이미지에서 추출한 배경색을 가볍게 들고 다니기 위한 값 타입.

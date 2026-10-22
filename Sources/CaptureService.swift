@@ -127,7 +127,8 @@ enum CaptureService {
                         // Vision 문서 인식 결과(원점 좌하단)를 이미지 픽셀 좌표(원점 좌상단)로 뒤집어 분류에 넘긴다.
                         let flipped = paragraph.glyphBoxes.map { g in CGRect(x: g.minX, y: 1 - g.maxY, width: g.width, height: g.height) }
                         let hint = ImageTextRecognizer.classifyFontStyle(of: image, glyphBoxes: flipped)
-                        return OCRLine(id: index, text: paragraph.text, boundingBox: paragraph.box, fontStyleHint: hint)
+                        return OCRLine(id: index, text: paragraph.text, boundingBox: paragraph.box, fontStyleHint: hint,
+                                       glyphBoxes: paragraph.glyphBoxes, glyphTexts: paragraph.glyphTexts)
                     }
                 }
             } catch is CancellationError {
@@ -177,9 +178,13 @@ enum CaptureService {
         return sorted.enumerated().compactMap { index, observation in
             guard let candidate = observation.topCandidates(1).first else { return nil }
             // glyphBoxes(of:)는 이미 이미지 좌상단 원점 정규화 좌표로 뒤집혀 있어 classifyFontStyle에 바로 쓸 수 있다.
-            let glyphBoxes = ImageTextRecognizer.glyphBoxes(of: candidate)
+            let glyphs = ImageTextRecognizer.glyphs(of: candidate)
+            let glyphBoxes = glyphs.map(\.1)
             let hint = ImageTextRecognizer.classifyFontStyle(of: image, glyphBoxes: glyphBoxes)
-            return OCRLine(id: index, text: candidate.string, boundingBox: observation.boundingBox, fontStyleHint: hint)
+            // 환산 말풍선용 글자 상자는 줄 상자와 같은 원점 좌하단 좌표로 되돌려 둔다.
+            let visionBoxes = glyphBoxes.map { CGRect(x: $0.minX, y: 1 - $0.maxY, width: $0.width, height: $0.height) }
+            return OCRLine(id: index, text: candidate.string, boundingBox: observation.boundingBox, fontStyleHint: hint,
+                           glyphBoxes: visionBoxes, glyphTexts: glyphs.map(\.0))
         }
     }
 

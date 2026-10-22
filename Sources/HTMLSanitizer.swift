@@ -84,6 +84,12 @@ struct FormattedHTML {
     mt-ov{position:absolute;box-sizing:border-box;display:flex;align-items:center;justify-content:center;\
     overflow:hidden;border-radius:2px;padding:1px 3px;text-align:center;line-height:1.1;white-space:normal;\
     word-break:break-word;pointer-events:none;font:600 12px -apple-system,sans-serif}
+    mt-fx{all:initial!important;display:inline!important;margin-left:.3em!important;font:inherit!important;font-size:.82em!important;\
+    font-weight:400!important;color:#8e8e93!important;white-space:nowrap!important;-webkit-user-select:none!important}
+    mt-fxb{all:initial!important;position:absolute!important;box-sizing:border-box!important;padding:1px 6px!important;\
+    border-radius:999px!important;background:rgba(255,255,255,.86)!important;color:#3a3a3c!important;\
+    font:600 11px/1.3 -apple-system,sans-serif!important;white-space:nowrap!important;\
+    box-shadow:0 1px 3px rgba(0,0,0,.28)!important;pointer-events:none!important}
     mt-end{all:initial!important;display:block!important;clear:both!important;height:0!important}
     """
 

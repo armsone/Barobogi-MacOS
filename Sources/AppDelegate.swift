@@ -15,6 +15,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         BundledFonts.registerIfNeeded()
+        // 원화 환산 환율(번역과 별도): 저장 환율을 읽고, 연결 상태·앱 활성화를 지켜보며 뒤에서 갱신한다.
+        ExchangeRateStore.shared.start()
         applyBundleIcon()
         buildMainMenu()
 

@@ -52,7 +52,7 @@
   const SKIP_SELECTOR = [
     "script", "style", "noscript", "template", "textarea", "input", "select", "option", "code", "pre", "kbd",
     "samp", "var", "svg", "math", "canvas", "iframe", "object", "[translate='no']", ".notranslate",
-    "[contenteditable='']", "[contenteditable='true']", "smt-translator-layer"
+    "[contenteditable='']", "[contenteditable='true']", "smt-translator-layer", "smt-fx"
   ].join(",");
 
   const FONT_STYLES = ["auto", "gothic", "myeongjo", "gungseo", "hand"];
@@ -122,7 +122,11 @@
     return { id: typeof id === "string" && ACTION_ID.test(id) ? id : `a${Date.now().toString(36)}-${actionSeq}`,
              startedAt, source, provisional: source !== "click", gen: null, engine: null, token: null, deadline: false,
              stages: [], outcome: null, endedAt: null, stopStage: null, waitRefine: false, inventory: null,
-             timing: { text: null, image: null } };
+             timing: { text: null, image: null },
+             // 다듬기 구간(벽시계): a=첫 다듬기 요청을 띄운 때, b=그 세대의 마지막 다듬기가 끝난 때(겹친 요청은 한 구간). 다듬기가 없으면 null.
+             refine: null,
+             // 다듬기 요청 결과 집계(개수·코드만): req 보낸 묶음, ok 성공, fail 실패, sel 선택, hit 재사용, fresh 모델 실행, changed 바뀐 문장
+             refineStat: null };
   }
 
   function markStage(action, name) {
@@ -142,6 +146,7 @@
     const at = Number.isFinite(endedAt) ? endedAt : Date.now() - action.startedAt;
     const last = action.stages[action.stages.length - 1];
     if (last && last.b === null) last.b = Math.max(last.a, at);
+    if (action.refine && action.refine.b === null) action.refine.b = Math.max(action.refine.a, at);
     action.outcome = outcome;
     action.endedAt = at;
     action.stopStage = stopStage;
@@ -255,7 +260,28 @@
   function beginRefine(pageGen, items = 0) {
     refinePending.set(pageGen, (refinePending.get(pageGen) || 0) + 1);
     refineItemsPending.set(pageGen, (refineItemsPending.get(pageGen) || 0) + items);
+    // runPass가 시작한 같은 세대 동작에만 기록한다(다른 세대·끝난 동작은 건드리지 않는다).
+    const timed = state.passAction;
+    if (timed && timed.gen === pageGen && timed.outcome === null && !timed.refine) {
+      timed.refine = { a: Date.now() - timed.startedAt, b: null };
+    }
     reportProgress();
+  }
+
+  /** 다듬기 묶음 하나의 결과를 이 세대 동작에 더한다. meta는 네이티브 개수(없으면 옛 앱), code는 실패 코드. */
+  function noteRefine(pageGen, meta, code = null) {
+    const action = state.passAction;
+    if (!action || action.gen !== pageGen) return;
+    const stat = action.refineStat || (action.refineStat = { req: 0, ok: 0, fail: 0, sel: 0, hit: 0, fresh: 0, changed: 0, code: null, legacy: 0 });
+    stat.req += 1;
+    if (code) {
+      stat.fail += 1;
+      if (!stat.code) stat.code = code;
+      return;
+    }
+    stat.ok += 1;
+    if (!meta) { stat.legacy += 1; return; }
+    stat.sel += meta.sel; stat.hit += meta.hit; stat.fresh += meta.fresh; stat.changed += meta.changed;
   }
 
   function endRefine(pageGen, items = 0) {
@@ -267,6 +293,9 @@
     else refineItemsPending.set(pageGen, left);
     // 패스가 끝난 뒤 다듬기만 기다리던 동작은 마지막 다듬기가 끝날 때 멈춘다(세대가 바뀌었으면 중단).
     const action = state.action;
+    if (next <= 0 && action && action.gen === pageGen && action.refine && action.refine.b === null) {
+      action.refine.b = Math.max(action.refine.a, Date.now() - action.startedAt);
+    }
     if (next <= 0 && action && action.waitRefine && action.gen === pageGen && action.outcome === null) {
       finishAction(action, pageGen === state.pageGen ? "done" : "cancelled");
     }
@@ -320,6 +349,8 @@
     document.removeEventListener("webkitfullscreenchange", onFullscreenChange);
     removeEventListener("popstate", onHistoryChange);
     removeEventListener("hashchange", onHistoryChange);
+    fxClear();
+    removeEventListener("online", onFxOnline);
     for (const [node, record] of records) {
       if (!node.isConnected) continue;
       if (record.translated !== null && node.nodeValue === record.translated) node.nodeValue = record.original;
@@ -330,6 +361,10 @@
     cache.clear();
     langCache.clear();
   }
+
+  // 부분 번역 결과를 받는 요청별 처리기(요청 키 → 함수). 요청이 끝나면 지운다.
+  const partialSinks = new Map();
+  let partialCounter = 0;
 
   function send(message) {
     if (contextDead) {
@@ -378,6 +413,7 @@
   /** 지금 기준(profile(): 엔진|언어)과 다른 기준으로 번역해 둔 글자를 원문으로 되돌린다. 1회성 Google·DeepL 번역를 켜고 끄거나
    *  언어·엔진을 바꿀 때 이전 결과와 새 결과가 한 화면에 섞이지 않게 한다. 새 기준으로 다시 번역되면 그때 바뀐다. */
   function revertForeignRecords() {
+    fxClear();
     const current = profile();
     for (const [node, record] of records) {
       if (record.target === current) continue;
@@ -605,11 +641,13 @@
 
   /** 글꼴 설정이 바뀌었을 때 이미 번역되어 보이는 텍스트 노드만 재캡처·재번역 없이 다시 글꼴을 입힌다. */
   function rerenderTextFonts() {
+    fxClear();
     for (const [node, record] of records) {
       if (!node.isConnected || record.translated === null) continue;
       if (state.view !== "translated" || node.nodeValue !== record.translated) continue;
       applyNodeFont(node, state.fontStyle);
     }
+    fxApplyText();
   }
 
   /** 자동 글꼴일 때 원본 글자 특징(item.fs)으로 고른 갈래, 수동이면 사용자가 고른 갈래로 확정한다. 알 수 없는
@@ -672,6 +710,10 @@
       // 반영되지 않을 수 있는 브라우저 동작을 피한다). 치수(width/height)는 fitFontSize가 측정 전에 직접 both 넣는다.
       ".tt{display:inline-block;flex-shrink:0;max-width:none;max-height:none}" +
       // 번역 실패 항목은 원문 자리를 채우는 글자를 그리지 않고(원문 가림만 유지), 그림마다 작게 한 번만 알린다.
+      // 원화 환산 말풍선: 외국 금액 바로 아래에 얹는 작은 반투명 흰색 둥근 칸(원래 금액은 그대로 두고 가리지 않는다).
+      ".fxb{position:absolute;pointer-events:none;box-sizing:border-box;padding:1px 6px;border-radius:999px;" +
+      "background:rgba(255,255,255,.86);color:#3a3a3c;font-weight:600;line-height:1.3;white-space:nowrap;" +
+      "font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;box-shadow:0 1px 3px rgba(0,0,0,.28);z-index:5}" +
       ".fail{position:absolute;right:2px;bottom:2px;max-width:70%;padding:1px 5px;border-radius:3px;" +
       "background:rgba(0,0,0,.72);color:#fff;font:11px -apple-system,BlinkMacSystemFont,system-ui,sans-serif;" +
       "line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}";
@@ -798,6 +840,7 @@
   /** done(배열)을 주면 지금 번역 설정으로 이미 처리한(번역했거나 원문 유지로 정한) 조각도 같은 기준(같은 범위·같은 제외 규칙,
    *  최대 MAX_UNITS)으로 그 배열에 모은다. 목록(인벤토리) 집계에만 쓰며, 돌려주는 작업 대상은 done이 없을 때와 같다. */
   function collectUnits(done = null) {
+    fxClear(); // 환산 주석이 쪼갠 텍스트 노드는 수집 전에 원래 모양으로 되돌린다
     const body = document.body;
     if (!body) return [];
     const margin = innerHeight * 0.5;
@@ -961,7 +1004,11 @@
       // langs는 입력과 같은 개수일 때만 쓴다(구버전 네이티브 앱이면 없음 → 언어 통계는 집계하지 않는다). 조각 낸
       // 문단은 조각마다 다른 언어로 보일 수 있어 통계에 넣지 않는다(override에서만 조각이 생긴다).
       const langs = !override && Array.isArray(response.langs) && response.langs.length === batch.length ? response.langs : null;
-      response.texts.forEach((value, index) => {
+      response.texts.forEach((value, index) => consumeItem(batch, value, index, langs));
+    }
+    // 항목 하나의 결과를 반영한다. 부분 전달(성공한 항목만)과 최종 응답이 같은 길을 쓰며, 이미 적용한 문단은 다시 적용하지 않는다.
+    function consumeItem(batch, value, index, langs) {
+      {
         const ok = typeof value === "string";
         // 실패(null/미번역)는 캐시에 남기지 않는다 — 다음에 다시 시도하게 하며, 빈 문자열을 "성공한 번역"으로
         // 오인해 조각을 합칠 때 그 부분만 조용히 사라지지 않게 한다(원래 문제: null → "" → join 시 글자 소실).
@@ -972,7 +1019,13 @@
         if (ok && langs) langPut(batch[index], lang);
         for (const { unit, index: partIndex } of groups.get(batch[index]) || []) {
           const entry = pending.get(unit);
-          if (!entry) continue;
+          if (!entry) {
+            // 부분 전달로 이미 적용한 문단: 최종 응답의 언어 판별만 기록에 보탠다(다시 적용하지 않음).
+            const record = records.get(unit.node);
+            if (ok && lang !== undefined && record && record.lang === undefined && record.translated !== null &&
+                record.original === unit.source && unit.trimmed === batch[index]) record.lang = lang;
+            continue;
+          }
           // 실패한 조각은 원문 그대로 채워 둔다(합친 글자 수는 항상 원문과 같아 어딘가 비는 일이 없다). 전체를
           // 번역으로 적용할지는 failed 플래그로 따로 판단한다.
           entry.resultParts[partIndex] = ok ? keepEdges(entry.parts[partIndex], value, entry.parts.length) : entry.parts[partIndex];
@@ -990,7 +1043,7 @@
             if (joined && entry.parts.length === 1) refinePool.push({ node: unit.node, original: unit.source, draft: joined });
           }
         }
-      });
+      }
     }
     // 처음 보는 그림은 인식 뒤 일반 글자와 같이 보내므로 외부 서비스 준비를 두 번 기다리지 않는다.
     // 기존 그림 재사용과 큰 일반 글자 묶음은 이전 검증 경로를 유지한다.
@@ -1033,9 +1086,25 @@
       if (sendInfo) Object.assign(sendInfo, { batch: sendInfo.batch + 1, batchTexts: batch.length, batchChars: chars });
       const sentAt = performance.now();
       const actionId = action ? { action: action.id } : {};
-      const response = await send(override
-        ? { cmd: "translatePageExternal", engine, target, texts: batch, token: override.token, ...actionId }
-        : { cmd: "translate", target, engine, texts: batch, ...actionId });
+      // Mac 기본 번역만: 배경이 보내 주는 부분 결과(끝난 항목)를 이 요청 키로 받아 문단이 완성되는 대로 바로 적용한다.
+      const partialKey = !override && engine === LOCAL_ENGINE ? `p${++partialCounter}-${Math.random().toString(36).slice(2, 10)}` : null;
+      if (partialKey) {
+        partialSinks.set(partialKey, (items) => {
+          if (document.visibilityState === "hidden" || !stillCurrent(pageGen) || state.pageEngineOverride !== override ||
+              target !== state.target || engine !== state.engine) return;
+          for (const item of items) {
+            if (item && Number.isInteger(item.i) && item.i >= 0 && item.i < batch.length && typeof item.t === "string") consumeItem(batch, item.t, item.i, null);
+          }
+        });
+      }
+      let response;
+      try {
+        response = await send(override
+          ? { cmd: "translatePageExternal", engine, target, texts: batch, token: override.token, ...actionId }
+          : { cmd: "translate", target, engine, texts: batch, ...actionId, ...(partialKey ? { partialKey } : {}) });
+      } finally {
+        if (partialKey) partialSinks.delete(partialKey);
+      }
       textTiming.batches += 1;
       textTiming.roundtrip += Math.round(performance.now() - sentAt);
       if (sendInfo) Object.assign(sendInfo, { sentTexts: sendInfo.sentTexts + batch.length, sentChars: sendInfo.sentChars + chars });
@@ -1089,7 +1158,7 @@
     for (let node = walker.nextNode(); node && length < limit; node = walker.nextNode()) {
       if (node.parentElement && node.parentElement.closest("script,style,noscript,template,smt-translator-layer")) continue;
       const record = records.get(node);
-      let value = record && node.nodeValue === record.translated ? record.original : node.nodeValue;
+      let value = record && fxFull(node) === record.translated ? record.original : fxFull(node);
       if (node.parentElement && node.parentElement.closest("sup") && value.trim()) value = `[${value.trim()}]`;
       parts.push(value);
       length += value.length;
@@ -1180,6 +1249,8 @@
       return;
     }
     if (!stillCurrent(pageGen) || isExternal()) return;
+    fxClear();
+    try {
     for (const item of response.items || []) {
       const index = Number(String(item.k).slice(1));
       const candidate = candidates[index];
@@ -1195,6 +1266,9 @@
       const refined = lead + refinedTrimmed + trail;
       record.translated = refined;
       if (state.view === "translated" && candidate.node.nodeValue === expectedCurrent) candidate.node.nodeValue = refined;
+    }
+    } finally {
+      fxApplyText();
     }
   }
 
@@ -1797,6 +1871,8 @@
       elemW: rect.width, elemH: rect.height,
       langs: langs && typeof langs === "object" ? langs : undefined,
       items,
+      // 번역 대상이 아니라 번역 조각이 없는 줄(가격 숫자 등)의 원화 환산 후보(위치·인식 원문·글자 상자)
+      fx: Array.isArray(candidate.fx) ? candidate.fx : [],
       patches: null,
       done: false, // 끝까지 그렸을 때만 true(번역 서비스를 바꿀 때 재사용 후보가 된다)
       // 이 그림에 대신한 이전 성공 덮개(남겨 둔 기록, 메모리에만). 시간 초과 때만 되돌리는 데 쓰고 완료로 확정되면 놓는다.
@@ -2361,7 +2437,10 @@
       div.dataset.vertical = unit.vertical ? "1" : "0";
     }
 
-    if (renderCurrent()) record.done = true;
+    if (renderCurrent()) {
+      record.done = true;
+      if (state.view === "translated") fxBubbles(record);
+    }
   }
 
   /** 이미 그려진 이미지 덮개를 재캡처·재번역 없이 다시 그린다(글자색·원문 가림 조각·자리는 그대로, 조각은 다시
@@ -2375,7 +2454,7 @@
       if (!geometry) continue;
       const { rect, rects } = geometry;
       const candidate = {
-        img, members: record.members, rects, rect, key: record.key,
+        img, members: record.members, rects, rect, key: record.key, fx: record.fx,
         clip: { x: rect.left + record.offX, y: rect.top + record.offY, w: record.w, h: record.h }
       };
       renderImage(candidate, record.items, record.langs, null, record.patches || undefined).catch(() => {});
@@ -2442,7 +2521,9 @@
     beginRefine(pageGen, items.length);
     try {
       const response = Promise.all(batches.map((part) =>
-        send({ cmd: "refine", target: state.target, engine: state.engine, items: part }).catch(() => ({ items: [] }))
+        send({ cmd: "refine", target: state.target, engine: state.engine, items: part })
+          .then((result) => { noteRefine(pageGen, result.meta || null); return result; })
+          .catch((error) => { noteRefine(pageGen, null, typeof error?.code === "string" ? error.code : "error"); return { items: [] }; })
       )).then((results) => ({ items: results.flatMap((r) => r.items || []) }));
       await Promise.all([
         refineImageCandidates(images, pageGen, image?.scrollGen, response),
@@ -2637,7 +2718,7 @@
       // 번역문(t)만 바꾸고 위치·글자 상자·쓰기 방향·글꼴 판정·원문 가림 정보는 그대로 둔다. 이전 실패 표시는 새 번역으로 다시 판정한다.
       const items = markUnresolved(record.items.map(({ unresolved, ...item }) => ({ ...item, t: translations.get(item.o) || "" })),
         override.target);
-      await renderImage({ img: candidate.img, members: record.members, rects, rect, key: candidate.key,
+      await renderImage({ img: candidate.img, members: record.members, rects, rect, key: candidate.key, fx: record.fx,
                           clip: { x: rect.left + record.offX, y: rect.top + record.offY, w: record.w, h: record.h } },
         items, record.langs, null, record.patches);
     }
@@ -2763,6 +2844,7 @@
         // OCR을 기다리는 사이 이 이미지가 다른 그림으로 바뀌었거나(src·currentSrc) 새 그림을 불러오는 중이거나(!complete)
         // 자리·크기가 달라졌으면(같은 엘리먼트를 재사용하거나 옮기는 리더) 방금 받은 글자는 예전 그림 것이므로 버린다.
         if (!candidateUnchanged(candidate)) continue;
+        candidate.fx = Array.isArray(image.fx) ? image.fx : [];
         await renderImage(candidate, withoutImageNames(candidate.img, image.items), image.langs,
           isExternal() ? null : imageRefineCandidates);
         // 디버그용(제품 UI 아님): 이 캡처의 견본 측정 상태와 검정/회색/흰색 대표값
@@ -2847,6 +2929,7 @@
     checkNavigation();
     if (manual) state.holdUrl = null;
     state.running = true;
+    fxRequest("translate"); // 저장 환율을 바로 받고 15분이 지났으면 뒤에서 갱신(번역은 기다리지 않는다)
     // 번역을 보내기 전에 지금 화면에 보이는 그림 수를 먼저 센다(이미 그려 둔 그림도 포함, 작업 대상 여부와 무관).
     let imageInv = { images: 0, imageSentences: 0 };
     if (state.images) {
@@ -2930,6 +3013,8 @@
       }
     } finally {
       state.running = false;
+      fxApplyText();
+      fxBubblesAll(state.view === "translated");
       updateInventory(inventoryOf(pageGen), { phase: "done" });
       // 동작 끝: 세대가 바뀌었으면 중단, 오류면 오류, 다듬기가 남았으면 다듬기 단계로 넘겨 마지막 다듬기가 끝날 때 멈춘다.
       if (state.passAction === action) state.passAction = null;
@@ -2965,6 +3050,7 @@
   function setView(view) {
     if (state.view === view) return;
     state.view = view;
+    fxClear();
     for (const [node, record] of records) {
       if (!node.isConnected) {
         records.delete(node);
@@ -2979,6 +3065,8 @@
       else removeFontSpan(node);
     }
     applyLayerVisibility();
+    // 원문 보기에서는 환산 주석·말풍선을 모두 걷고, 번역 보기로 돌아오면 저장된 환율로 다시 붙인다.
+    if (view === "translated") { fxApplyText(); fxBubblesAll(true); } else fxBubblesAll(false);
     setStatus(view === "translated" ? "번역 표시" : "원문 표시");
     reportProgress();
   }
@@ -3147,10 +3235,347 @@
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState !== "visible") {
       if (ocrInFlight) send({ cmd: "cancel", kind: "ocr" }).catch(() => {});
-    } else if (isAutoLike()) {
-      schedule();
+    } else {
+      if (state.view === "translated") fxRequest("foreground");
+      if (isAutoLike()) schedule();
     }
   });
+  addEventListener("online", onFxOnline);
+
+  // MARK: 원화 환산(fx.js) — 텍스트는 금액 바로 뒤 작은 회색 "(약 N원)", 이미지는 금액 바로 아래 작은 말풍선.
+  // 환율은 배경(고정 공개 주소 익명 GET)에서만 받고, 이 스크립트는 저장 환율 표만 받는다(페이지 내용은 어디에도 보내지 않음).
+  // 원문 보기·이동·번역 갱신 때는 주석을 먼저 걷어 텍스트 노드를 번역 기록과 같은 모양으로 되돌린 뒤 다시 붙인다.
+  const FX = globalThis.BarobogiFX || null;
+  const fx = { has: false, krwPer: {}, detail: "", attribution: null };
+  const FX_MAX_NODES = 400;
+  const FX_HINT = /[$€£¥￥＄₱₹฿₫₽₺₪₴₦₭₸₾₼₡₲₵円圓元엔달러유로파운드위안바트페소루피링깃ドルユーロポンド美欧英镑鎊]|\b[A-Z]{3}\b|\b(?:Rp|RM|Ft|Php)\b|zł|Kč/;
+  const FX_WORDS = /dollar|euro|yen|peso|baht|yuan|rupee|rupiah|ringgit|pound|renminbi|zloty|ruble/i;
+  /** 환산 주석이 쪼갠 텍스트 노드: 앞 노드 → { full, cut, tails, els } */
+  const fxMarks = new Map();
+
+  /** 우리가 한 DOM 변경은 변경 감시(MutationObserver)가 페이지 변화로 오해하지 않도록 기록을 버린다. */
+  function fxMutate(change) {
+    try { change(); } finally { if (observing) observer.takeRecords(); }
+  }
+
+  /** 환산 주석이 쪼개 놓은 노드는 이어 붙인 원래 값(번역 기록과 비교하는 값)으로 읽는다. */
+  function fxFull(node) {
+    const mark = fxMarks.get(node);
+    return mark && node.nodeValue === mark.cut ? mark.full : node.nodeValue;
+  }
+
+  function fxClear() {
+    if (!fxMarks.size) return;
+    fxMutate(() => {
+      for (const [node, mark] of fxMarks) {
+        for (const el of mark.els) el.remove();
+        for (const tail of mark.tails) tail.remove();
+        if (node.nodeValue === mark.cut) node.nodeValue = mark.full;
+      }
+      fxMarks.clear();
+    });
+    fxCredit();
+  }
+
+  /** 제공사 약관상 출처 표기: 환산 주석/말풍선이 화면에 있는 동안 페이지에 항상 보이는 10px 링크(툴팁에만 두지 않는다). */
+  function fxCredit() {
+    const existing = document.documentElement ? document.documentElement.querySelector(":scope > smt-fx-credit") : null;
+    let bubbles = false;
+    if (fx.attribution && state.view === "translated") {
+      for (const record of imageRecords.values()) { if (record.box && record.box.querySelector(".fxb")) { bubbles = true; break; } }
+    }
+    const want = !!fx.attribution && state.view === "translated" && (fxMarks.size > 0 || bubbles);
+    if (!want) { if (existing) fxMutate(() => existing.remove()); return; }
+    if (existing) return;
+    fxMutate(() => {
+      const box = document.createElement("smt-fx-credit");
+      box.className = "notranslate";
+      box.setAttribute("translate", "no");
+      box.style.cssText = "all:initial;position:fixed;right:8px;bottom:6px;z-index:2147483646;padding:1px 6px;border-radius:999px;" +
+        "background:rgba(255,255,255,.88);font:10px/14px -apple-system,system-ui,sans-serif;box-shadow:0 0 0 .5px rgba(0,0,0,.12);";
+      const link = document.createElement("a");
+      link.textContent = fx.attribution.text;
+      link.href = fx.attribution.url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.style.cssText = "all:initial;font:10px/14px -apple-system,system-ui,sans-serif;color:#6e6e73;text-decoration:underline;cursor:pointer;";
+      box.appendChild(link);
+      document.documentElement.appendChild(box);
+    });
+  }
+
+  function fxRequest(reason) {
+    if (!FX || contextDead) return;
+    send({ cmd: "fxRates", reason }).then((response) => fxAdopt(response)).catch(() => {});
+  }
+
+  function fxAdopt(response) {
+    if (!response || response.ok !== true) return;
+    fx.has = response.has === true && !!response.krwPer && typeof response.krwPer === "object";
+    fx.krwPer = fx.has ? response.krwPer : {};
+    fx.detail = typeof response.detail === "string" ? response.detail.slice(0, 400) : "";
+    const credit = response.attribution;
+    fx.attribution = fx.has && credit && credit.url === FX.ATTRIBUTION_URL && typeof credit.text === "string" ? { text: FX.ATTRIBUTION_TEXT, url: FX.ATTRIBUTION_URL } : null;
+    document.documentElement.querySelector(":scope > smt-fx-credit")?.remove();
+    if (state.running) return; // 번역 중에는 건드리지 않고 패스가 끝날 때 붙인다
+    fxApplyText();
+    fxBubblesAll(state.view === "translated");
+  }
+
+  function onFxOnline() {
+    fxRequest("online");
+  }
+
+  function fxAnnotation(mention) {
+    const el = document.createElement("smt-fx");
+    el.className = "notranslate";
+    el.setAttribute("translate", "no");
+    el.textContent = `(${mention.text})`;
+    if (fx.detail) el.title = fx.detail;
+    el.style.cssText = "all:unset;display:inline;margin-left:.3em;font-size:.82em;font-weight:400;font-style:normal;" +
+      "color:#8e8e93;white-space:nowrap;-webkit-user-select:none;user-select:none;pointer-events:none;";
+    return el;
+  }
+
+  function fxApplyText() {
+    if (!FX || contextDead) return;
+    fxClear();
+    if (!fx.has || state.view !== "translated" || state.running || !document.body) return;
+    const margin = innerHeight * 0.5;
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    const okParents = new Map();
+    const found = [];
+    const split = [];
+    let walked = 0;
+    for (let node = walker.nextNode(); node && walked < MAX_WALK && found.length < FX_MAX_NODES; node = walker.nextNode()) {
+      walked += 1;
+      const value = node.nodeValue;
+      if (!value || value.length < 2 || value.length > MAX_TEXT || !/[\d０-９]/.test(value)) continue;
+      if (!FX_HINT.test(value) && !FX_WORDS.test(value)) {
+        // "$"와 "99"가 이웃한 인라인 요소로 갈라진 가격 후보: 숫자만 있는 짧은 노드(통화 기호는 이웃 노드에 있다)
+        if (value.length <= 24 && /^\s*[\d０-９][\d０-９.,\s]*$/.test(value) && split.length < FX_MAX_NODES) split.push(node);
+        continue;
+      }
+      const parent = node.parentElement;
+      if (!parent) continue;
+      if (!fxVisible(parent, okParents)) continue;
+      const record = records.get(node);
+      // 번역 기록이 있는 노드는 지금 보이는 값이 기록한 번역문(또는 번역하지 않은 원문)일 때만 다룬다.
+      if (record && value !== record.translated && !(record.translated === null && value === record.original)) continue;
+      range.selectNodeContents(node);
+      if (!inBand(range.getBoundingClientRect(), margin)) continue;
+      found.push({ node, record });
+    }
+    if (!found.length && !split.length) { fxCredit(); return; }
+    fxMutate(() => {
+      for (const { node, record } of found) {
+        const text = node.nodeValue;
+        const textLang = record && typeof record.lang === "string" && record.lang !== "unknown" ? record.lang : "";
+        const context = FX.makeContext({
+          htmlLang: document.documentElement.lang, host: location.hostname, textLang,
+          text: record ? record.original : String(node.parentElement.textContent || "").slice(0, 300)
+        });
+        const mentions = FX.findAmounts(text, context, fx.krwPer).mentions.filter((m) => m.text);
+        if (!mentions.length || !node.parentNode) continue;
+        const mark = { full: text, cut: "", tails: [], els: [] };
+        let current = node;
+        let cursor = 0;
+        for (const mention of mentions) {
+          const rest = current.splitText(mention.end - cursor);
+          const el = fxAnnotation(mention);
+          rest.parentNode.insertBefore(el, rest);
+          mark.tails.push(rest);
+          mark.els.push(el);
+          current = rest;
+          cursor = mention.end;
+        }
+        mark.cut = node.nodeValue;
+        fxMarks.set(node, mark);
+      }
+      fxApplySplit(split, okParents, margin);
+    });
+    fxCredit();
+  }
+
+  function fxVisible(parent, okParents) {
+    let ok = okParents.get(parent);
+    if (ok === undefined) {
+      ok = !parent.closest(SKIP_SELECTOR) && !parent.isContentEditable;
+      for (let el = parent; ok && el; el = el.parentElement) {
+        const style = getComputedStyle(el);
+        if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse" ||
+            Number(style.opacity) <= 0.01 || style.contentVisibility === "hidden") ok = false;
+      }
+      okParents.set(parent, ok);
+    }
+    return ok;
+  }
+
+  /** 가장 가까운 블록(인라인이 아닌) 조상. 가격 조각을 이어 붙이는 범위를 한 블록 안으로 제한한다. */
+  function fxBlockOf(el) {
+    for (let cur = el; cur && cur !== document.documentElement; cur = cur.parentElement) {
+      const display = getComputedStyle(cur).display;
+      if (!(display.startsWith("inline") || display === "contents" || display === "ruby")) return cur;
+    }
+    return document.body;
+  }
+
+  /** `<span>$</span><span>99</span>`처럼 갈라진 가격: 같은 블록의 텍스트 노드를 이어 붙여 읽고, 둘 이상의 노드에 걸친 금액만 마지막 노드 뒤에 주석을 붙인다.
+   *  한 노드 안의 금액은 위의 일반 경로가 이미 처리했다(중복 방지). 블록을 넘는 이어 붙이기·큰 innerHTML 훑기는 하지 않는다. */
+  function fxApplySplit(candidates, okParents, margin) {
+    const doneBlocks = new Set();
+    for (const first of candidates) {
+      const parent = first.parentElement;
+      if (!parent || !first.isConnected || fxMarks.has(first) || !fxVisible(parent, okParents)) continue;
+      const block = fxBlockOf(parent);
+      if (!block || doneBlocks.has(block)) continue;
+      doneBlocks.add(block);
+      const segs = [];
+      let text = "";
+      let bad = false;
+      const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const value = node.nodeValue;
+        if (!value || !node.parentElement || node.parentElement.closest(SKIP_SELECTOR)) continue;
+        if (fxBlockOf(node.parentElement) !== block) continue; // 안쪽 블록은 별개
+        if (!fxVisible(node.parentElement, okParents)) continue;
+        const record = records.get(node);
+        if (record && value !== record.translated && !(record.translated === null && value === record.original)) { bad = true; break; }
+        segs.push({ node, start: text.length, end: text.length + value.length, record });
+        text += value;
+        if (segs.length > 40 || text.length > 400) { bad = true; break; }
+      }
+      if (bad || segs.length < 2 || !/[\d０-９]/.test(text) || (!FX_HINT.test(text) && !FX_WORDS.test(text))) continue;
+      const lead = segs.find((seg) => seg.record && typeof seg.record.lang === "string" && seg.record.lang !== "unknown");
+      const context = FX.makeContext({
+        htmlLang: document.documentElement.lang, host: location.hostname, textLang: lead ? lead.record.lang : "",
+        text: lead ? lead.record.original : text.slice(0, 300)
+      });
+      const mentions = FX.findAmounts(text, context, fx.krwPer).mentions.filter((m) => m.text);
+      // 같은 노드를 두 번 쪼개지 않도록 뒤에서부터 붙인다.
+      for (const mention of mentions.reverse()) {
+        const startSeg = segs.find((seg) => mention.start >= seg.start && mention.start < seg.end);
+        const endSeg = segs.find((seg) => mention.end > seg.start && mention.end <= seg.end);
+        if (!startSeg || !endSeg || startSeg === endSeg || !endSeg.node.isConnected || fxMarks.has(endSeg.node)) continue;
+        // 범위 기하: 금액 전체가 실제로 화면의 보이는 띠 안에 있는지 확인한다.
+        try {
+          range.setStart(startSeg.node, mention.start - startSeg.start);
+          range.setEnd(endSeg.node, mention.end - endSeg.start);
+        } catch { continue; }
+        const rect = range.getBoundingClientRect();
+        if (!(rect.width > 0 && rect.height > 0) || !inBand(rect, margin)) continue;
+        const node = endSeg.node;
+        const full = node.nodeValue;
+        const at = mention.end - endSeg.start;
+        const el = fxAnnotation(mention);
+        if (at < full.length) {
+          const rest = node.splitText(at);
+          rest.parentNode.insertBefore(el, rest);
+          fxMarks.set(node, { full, cut: node.nodeValue, tails: [rest], els: [el] });
+        } else {
+          node.parentNode.insertBefore(el, node.nextSibling);
+          fxMarks.set(node, { full, cut: full, tails: [], els: [el] });
+        }
+      }
+    }
+  }
+
+  // MARK: 이미지 말풍선
+
+  const fxCountNonSpace = (str) => Array.from(str.replace(/\s+/gu, "")).length;
+
+  /** 금액이 차지하는 칸(0~1 정규화 → 덮개 상자 px). 글자 상자(g)가 인식 원문과 개수·글자 종류까지 맞으면 그 구간의 합집합,
+   *  아니면 줄 상자(x,y,w,h)를 글자 수 비율로 나눈 구간이다. */
+  function fxMentionRect(item, o, mention, W, H) {
+    const from = fxCountNonSpace(o.slice(0, mention.start));
+    const to = fxCountNonSpace(o.slice(0, mention.end));
+    const chars = Array.from(o.replace(/\s+/gu, ""));
+    const g = Array.isArray(item.g) ? item.g : null;
+    if (g && g.length === chars.length && to > from) {
+      const flags = typeof item.gl === "string" && item.gl.length === g.length ? item.gl : null;
+      const matches = !flags || chars.every((ch, k) => (/[\p{L}\p{N}]/u.test(ch) ? "1" : "0") === flags[k]);
+      if (matches) {
+        const part = g.slice(from, to);
+        const left = Math.min(...part.map((b) => b[0])), top = Math.min(...part.map((b) => b[1]));
+        const right = Math.max(...part.map((b) => b[0] + b[2])), bottom = Math.max(...part.map((b) => b[1] + b[3]));
+        if (right > left && bottom > top) return { l: left * W, t: top * H, r: right * W, b: bottom * H };
+      }
+    }
+    // 글자 상자가 없으면 줄 단위로 나눈다: 줄바꿈이 있는 문단은 금액이 든 줄만 잘라 쓴다(문단 전체 크기로 추정하지 않음).
+    const x = item.x * W, y = item.y * H, w = item.w * W, h = item.h * H;
+    if (!(w > 0 && h > 0)) return null;
+    const rows = o.split("\n");
+    let rowIndex = 0, rowStart = 0;
+    for (let k = 0, at = 0; k < rows.length; k += 1) {
+      if (mention.start >= at) { rowIndex = k; rowStart = at; }
+      at += rows[k].length + 1;
+    }
+    const total = Math.max(1, rows[rowIndex].length);
+    const lo = (mention.start - rowStart) / total, hi = Math.min(1, (mention.end - rowStart) / total);
+    if (h > w * 1.5) {
+      const col = w / rows.length;
+      return { l: x + w - col * (rowIndex + 1), t: y + h * lo, r: x + w - col * rowIndex, b: y + h * hi };
+    }
+    const row = h / rows.length;
+    return { l: x + w * lo, t: y + row * rowIndex, r: x + w * hi, b: y + row * (rowIndex + 1) };
+  }
+
+  function fxDominantLang(langs) {
+    let best = "", count = 0;
+    for (const [code, n] of Object.entries(langs || {})) if (code !== "unknown" && n > count) { best = code; count = n; }
+    return best;
+  }
+
+  function fxBubblesClear(record) {
+    record.box.querySelectorAll(".fxb").forEach((el) => el.remove());
+  }
+
+  /** 한 이미지 덮개 안에 환산 말풍선을 (다시) 만든다. 번역 조각이 없는 줄(record.fx)과 번역된 줄(record.items) 모두 대상이다. */
+  function fxBubbles(record) {
+    if (!FX || !record.box || !record.box.isConnected) return;
+    fxBubblesClear(record);
+    if (!fx.has || state.view !== "translated" || record.held) return;
+    const W = record.w, H = record.h;
+    const textLang = fxDominantLang(record.langs);
+    const placed = [];
+    const hits = (a, b) => a.l < b.r && a.r > b.l && a.t < b.b && a.b > b.t;
+    for (const item of [].concat(record.items || [], record.fx || [])) {
+      const o = item && typeof item.o === "string" ? item.o : "";
+      if (!o || !/[\d０-９]/.test(o) || (!FX_HINT.test(o) && !FX_WORDS.test(o))) continue;
+      const context = FX.makeContext({ htmlLang: document.documentElement.lang, host: location.hostname, textLang, text: o });
+      for (const mention of FX.findAmounts(o, context, fx.krwPer).mentions) {
+        if (!mention.text) continue;
+        const price = fxMentionRect(item, o, mention, W, H);
+        if (!price) continue;
+        const el = document.createElement("div");
+        el.className = "fxb";
+        el.textContent = mention.text;
+        el.style.fontSize = `${Math.max(9, Math.min(14, (price.b - price.t) * 0.62))}px`;
+        el.style.left = "0px";
+        el.style.top = "0px";
+        record.box.appendChild(el);
+        const bw = el.offsetWidth, bh = el.offsetHeight;
+        // 금액 바로 아래가 기본, 아래 공간이 없으면 위, 그것도 없으면 경계 안쪽으로 밀되 금액 칸을 가리지 않는 쪽을 고른다.
+        const left = Math.max(1, Math.min(price.l, W - bw - 1));
+        const candidates = [price.b + 2, price.t - bh - 2].map((top) => ({ l: left, t: top, r: left + bw, b: top + bh }));
+        candidates.push({ l: left, t: Math.max(1, H - bh - 1), r: left + bw, b: Math.max(1, H - bh - 1) + bh });
+        let pick = candidates.find((c) => c.t >= 1 && c.b <= H - 1 && !placed.some((p) => hits(c, p)));
+        if (!pick) pick = candidates.find((c) => c.t >= 1 && c.b <= H - 1 && !hits(c, price)) || candidates[0];
+        el.style.left = `${Math.round(pick.l)}px`;
+        el.style.top = `${Math.round(pick.t)}px`;
+        placed.push(pick);
+      }
+    }
+    fxCredit();
+  }
+
+  function fxBubblesAll(show) {
+    for (const record of imageRecords.values()) {
+      if (show) fxBubbles(record);
+      else if (record.box) fxBubblesClear(record);
+    }
+    fxCredit();
+  }
 
   // MARK: 확장 메시지
 
@@ -3168,7 +3593,7 @@
     if (state.view !== "translated") return { text, image, imageItems };
     const current = profile();
     for (const [node, record] of records) {
-      if (record.translated === null || record.target !== current || !node.isConnected || node.nodeValue !== record.translated) continue;
+      if (record.translated === null || record.target !== current || !node.isConnected || fxFull(node) !== record.translated) continue;
       text += letterCount(record.original);
     }
     const seen = new Set();
@@ -3234,7 +3659,9 @@
     return {
       id: action.id, startedAt: action.startedAt, source: action.source, engine: action.engine, deadline: action.deadline,
       outcome: action.outcome, endedAt: action.endedAt, stage: open, stopStage: action.stopStage ? { ...action.stopStage } : null,
-      stages: action.stages.map((stage) => ({ ...stage })), inventory: action.inventory, timing: action.timing
+      stages: action.stages.map((stage) => ({ ...stage })), inventory: action.inventory, timing: action.timing,
+      refine: action.refine ? { ...action.refine } : null,
+      refineStat: action.refineStat ? { ...action.refineStat } : null
     };
   }
 
@@ -3267,6 +3694,12 @@
   api.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (contextDead || sender.id !== api.runtime.id || !message || typeof message.cmd !== "string") return false;
     switch (message.cmd) {
+      case "partial": {
+        // 배경이 검증해 보낸 부분 결과. 요청 키가 지금 기다리는 요청이 아니면(끝남·취소·다른 페이지) 버린다.
+        const sink = typeof message.key === "string" ? partialSinks.get(message.key) : null;
+        if (sink && Array.isArray(message.items)) sink(message.items);
+        return false;
+      }
       case "configure": {
         // 마지막 원문 보기보다 먼저 시작된 흐름이 늦게 보낸 설정은 자동 번역·번역 시작을 되살리지 못하게 버린다.
         if (!Number.isFinite(message.epoch) || message.epoch < state.stopEpoch) {
@@ -3407,6 +3840,11 @@
         return false;
       case "state":
         sendResponse(snapshot());
+        return false;
+      case "fxUpdate":
+        // 배경이 새 환율을 받았다: 이미 붙인 환산 주석·말풍선을 새 값으로 바꾼다(번역 내용은 다시 요청하지 않는다).
+        if (message.fx && message.fx.ok === true) fxAdopt(message.fx);
+        sendResponse({ ok: true });
         return false;
       default:
         return false;

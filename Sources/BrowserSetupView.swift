@@ -193,7 +193,8 @@ private struct LanguagePackDownloadView: View {
             return
         }
         packStatus = ""
-        let newConfig = TranslationSession.Configuration(source: packSource.localeLanguage, target: packTarget.localeLanguage)
+        // 브라우저 번역(BrowserDirectTranslator)이 요구하는 빠른 전략(lowLatency) 팩을 받도록 Mac 기본 방식의 구성을 쓴다(26.4 미만은 기존 기본 구성).
+        let newConfig = TranslationBackend.system.makeConfiguration(source: packSource.localeLanguage, target: packTarget.localeLanguage)
         if var config = packConfiguration, config == newConfig {
             config.invalidate()
             packConfiguration = config

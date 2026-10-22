@@ -77,6 +77,9 @@ final class AppViewModel: ObservableObject {
     /// 자동 인식에서 언어를 판별하지 못했거나 지원되지 않아 번역 요청 없이 원문 그대로 둔 줄.
     /// 팝업(언어 선택) 방지를 위해 이런 줄은 Apple 번역에 보내지 않는다.
     private var skippedLineIDs: Set<Int> = []
+    /// 원화 환산 말풍선의 언어 단서(이번 캡처의 인식 글자 전체로 한 번만 정한다).
+    private var currencyContext = CurrencyContext()
+    private var currencyObserver: NSObjectProtocol?
     private var hasCompleteResult = false
     private var isDisplayingResult = false
     /// 완료된 결과에서 지금 패치를 숨겨 실제 화면을 보이는 중이면 true(Space 전환 방향)
@@ -126,6 +129,10 @@ final class AppViewModel: ObservableObject {
     var backend: TranslationBackend { TranslationBackendStore.shared.backend }
 
     init() {
+        // 새 환율이 도착하면(번역은 다시 하지 않고) 보이는 말풍선만 새 값으로 다시 그린다.
+        currencyObserver = NotificationCenter.default.addObserver(forName: .exchangeRatesDidUpdate, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.rebuildCurrencyBubbles() }
+        }
         // 메일 창이나 설정에서 방식을 바꿔도 같은 규칙으로 진행 중 작업을 정리한다.
         TranslationBackendStore.shared.observe { [weak self] _, _ in
             self?.resetTranslationSetup(message: "번역 방식이 바뀌었습니다. 번역을 눌러주세요")
@@ -335,6 +342,7 @@ final class AppViewModel: ObservableObject {
         groupQueue = []
         groupErrorMessage = nil
         translatedPatches = []
+        currencyContext = CurrencyContext()
         hasCompleteResult = false
         isDisplayingResult = false
         isShowingOriginal = false
@@ -507,6 +515,13 @@ final class AppViewModel: ObservableObject {
         lineBackgroundColors = bgColors
         isDisplayingResult = true
         overlay?.beginTranslationDisplay(isMailTarget: WindowGeometry.isCaptureOverAppleMail(screenFrame))
+        // 원화 환산: 번역 여부와 무관하게(번역 대상이 아닌 가격 줄 포함) 인식한 모든 줄에서 외국 금액을 찾아 말풍선을 놓는다.
+        // 저장된 환율을 바로 쓰고 필요하면 뒤에서 갱신한다(번역은 기다리지 않는다).
+        let allText = lines.map(\.text).joined(separator: "\n")
+        currencyContext = CurrencyContext(textLang: source.language.flatMap { $0.localeLanguage.languageCode?.identifier }
+                                            ?? ExchangeRateStore.dominantLanguage(of: allText), text: allText)
+        ExchangeRateStore.shared.refreshIfNeeded()
+        rebuildCurrencyBubbles()
 
         if source.language == target {
             for line in lines {
@@ -1005,6 +1020,23 @@ final class AppViewModel: ObservableObject {
             done: receivedLineIDs.count,
             total: currentLines.count)
         if status != next { status = next }
+    }
+
+    /// 지금 화면의 모든 OCR 줄에서 외국 금액을 찾아 말풍선을 다시 만든다(환율이 없으면 아무것도 놓지 않는다).
+    private func rebuildCurrencyBubbles() {
+        let store = ExchangeRateStore.shared
+        guard isDisplayingResult, store.hasRates, !currentLines.isEmpty else {
+            overlay?.setCurrencyBubbles([])
+            return
+        }
+        var specs: [CurrencyBubbleSpec] = []
+        for line in currentLines.values.sorted(by: { $0.id < $1.id }) {
+            // 줄 상자는 Vision 좌표(원점 좌하단)라 세로쓰기는 위→아래가 y 감소 방향이다.
+            specs += CurrencyBubbleLayout.specs(text: line.text, lineBox: line.boundingBox, glyphBoxes: line.glyphBoxes,
+                                               glyphTexts: line.glyphTexts, readingDownIsIncreasingY: false,
+                                               context: currencyContext, krwPer: store.krwPer)
+        }
+        overlay?.setCurrencyBubbles(specs)
     }
 
     private func appendPatch(_ patch: TranslatedPatch) {

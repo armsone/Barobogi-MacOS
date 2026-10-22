@@ -4,8 +4,9 @@ import CoreGraphics
 /// 화면 번역 창을 화면·다른 앱 창 크기에 맞추기 위한 읽기 전용 기하 계산.
 /// - 다른 앱 창 목록은 CGWindowListCopyWindowInfo(공개 CoreGraphics API)로 '창 번호·소유 PID·레이어·알파·경계'만 읽는다.
 ///   창 제목·소유 앱 이름 키는 읽지 않고, 결과는 호출한 동작(메뉴 한 번, 제목줄 더블클릭 한 번) 동안 메모리에만 두며
-///   저장·기록·전송하지 않는다. 스크린샷을 찍지 않으며 손쉬운 사용 등 새 권한을 요청하지 않는다.
-/// - 이 목록 조회는 비용이 크므로 끌기의 마우스 이벤트마다 부르지 않는다(호출 측이 동작당 한 번만 부름).
+///   저장·기록·전송하지 않는다. Mail 버튼은 보이는 동안 위치 갱신에도 사용한다.
+///   스크린샷을 찍지 않으며 손쉬운 사용 등 새 권한을 요청하지 않는다.
+/// - 목록 조회는 끌기의 마우스 이벤트마다 부르지 않는다. Mail 버튼의 대체 경로는 0.25초 간격으로만 조회한다.
 /// - kCGWindowBounds는 주 디스플레이(CGMainDisplayID, 메뉴 막대가 있는 물리 디스플레이) 왼쪽 위 원점 좌표다.
 ///   AppKit 전역 좌표(같은 디스플레이 왼쪽 아래 원점)로 바꿀 때 NSScreen.main(키 창이 있는 화면, 바뀜)이 아니라
 ///   CGMainDisplayID와 일치하는 NSScreen의 높이를 기준으로 쓴다. 음수 좌표의 보조 디스플레이도 같은 식으로 맞는다.
@@ -23,7 +24,7 @@ enum WindowGeometry {
     /// 다른 앱의 화면에 보이는 일반(레이어 0) 창을 앞→뒤 순서로 한 번 읽는다.
     /// 이 앱의 모든 창(같은 PID), 데스크톱 요소, 메뉴 막대·Dock·떠 있는 패널 같은 비일반 레이어,
     /// 완전히 투명한 창, 경계가 잘못됐거나 어느 화면과도 겹치지 않는 창은 뺀다.
-    static func otherAppWindows() -> [Candidate] {
+    static func otherAppWindows(ownerPID: pid_t? = nil) -> [Candidate] {
         guard let primaryHeight = primaryDisplayHeight(),
               let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
                 as? [[String: Any]] else { return [] }
@@ -36,6 +37,7 @@ enum WindowGeometry {
                   let number = (info[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
                   let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
                   let bounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary) else { continue }
+            if let ownerPID, pid != ownerPID { continue }
             if let alpha = (info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue, alpha <= 0 { continue }
             guard bounds.origin.x.isFinite, bounds.origin.y.isFinite,
                   bounds.width.isFinite, bounds.height.isFinite,
@@ -77,7 +79,7 @@ enum WindowGeometry {
     }
 
     /// CGMainDisplayID(전역 좌표 원점 디스플레이)의 높이(pt). AppKit 주 화면 frame은 원점이 (0, 0)이다.
-    private static func primaryDisplayHeight() -> CGFloat? {
+    static func primaryDisplayHeight() -> CGFloat? {
         let mainID = CGMainDisplayID()
         if let screen = NSScreen.screens.first(where: { displayID(of: $0) == mainID }) {
             return screen.frame.height

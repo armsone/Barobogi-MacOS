@@ -241,6 +241,8 @@ final class OverlayPanelController: NSObject {
         titleStrip.fullDisplayButton.action = #selector(fullDisplayButtonPressed)
         titleStrip.restoreButton.target = self
         titleStrip.restoreButton.action = #selector(restoreButtonPressed)
+        titleStrip.fxAttributionButton.target = self
+        titleStrip.fxAttributionButton.action = #selector(fxAttributionPressed)
         titleStrip.paletteButton.target = self
         titleStrip.paletteButton.action = #selector(paletteButtonPressed)
         titleStrip.pinButton.target = self
@@ -485,6 +487,7 @@ final class OverlayPanelController: NSObject {
     func clearResultDisplay() {
         patchesView.removeAllPatches()
         patchesView.isHidden = false
+        titleStrip.setFXAttribution(available: false, detail: "")
     }
 
     /// 새 캡처의 OCR 메타데이터가 준비된 뒤 호출된다. 이후 줄 단위로 패치가 추가된다.
@@ -492,12 +495,25 @@ final class OverlayPanelController: NSObject {
     /// 시스템 기본 글꼴만 쓴다.
     func beginTranslationDisplay(isMailTarget: Bool) {
         patchesView.removeAllPatches()
+        titleStrip.setFXAttribution(available: false, detail: "")
         patchesView.isMailTarget = isMailTarget
         patchesView.isHidden = false
     }
 
     func addTranslationPatch(_ patch: TranslatedPatch) {
         patchesView.add(patch: patch)
+    }
+
+    /// 원화 환산 말풍선을 (다시) 놓는다. 패치와 같은 뷰 안이라 원문보기·영역 이동·새 캡처 때 함께 사라진다.
+    /// 기본 제공사 환율을 쓰는 동안은 머리글에 작은 출처 링크를 켠다.
+    func setCurrencyBubbles(_ specs: [CurrencyBubbleSpec]) {
+        patchesView.setCurrencyBubbles(specs)
+        let store = ExchangeRateStore.shared
+        titleStrip.setFXAttribution(available: !specs.isEmpty && store.attributionVisible, detail: store.detailText)
+    }
+
+    @objc private func fxAttributionPressed() {
+        NSWorkspace.shared.open(ExchangeRateStore.attributionURL)
     }
 
     /// Apple Intelligence 다듬기 결과로 이미 그려진 같은 줄의 텍스트만 바꾼다(추가 패치 아님, 위치·글꼴 불변).

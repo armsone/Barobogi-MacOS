@@ -34,6 +34,11 @@ struct ContentView: View {
                         .padding(8)
                 }
             }
+            // 원화 환산 환율 출처 줄: 가격 주석과 별도인 작은 하단 상태 줄(받은 적이 없으면 안내 문구만)
+            if model.document != nil, !model.isLoading, model.displayMode != .original {
+                Divider()
+                ExchangeRateStatusLine()
+            }
         }
         .frame(minWidth: 680, minHeight: 520)
         // 외부 AI 숨김 실행용 실제 크기 웹 보기 표면(불투명 덮개 아래, 입력을 받지 않음)
@@ -626,9 +631,9 @@ struct TranslatedTextView: View {
         case (.original, _):
             styled(original)
         case (.translation, .done(let translated)?):
-            styled(translated)
+            styledTranslation(translated)
         case (.both, .done(let translated)?):
-            styled(translated)
+            styledTranslation(translated)
             Text(original)
                 .font(compact ? .caption : .callout)
                 .foregroundStyle(.secondary)
@@ -658,6 +663,20 @@ struct TranslatedTextView: View {
         default:
             EmptyView()
         }
+    }
+
+    /// 번역문: 외국 금액 바로 뒤에 작은 회색 "(약 N원)"을 붙인다(환율이 없거나 금액이 없으면 그대로).
+    private func styledTranslation(_ translated: String) -> some View {
+        Group {
+            if let annotated = ExchangeRateStore.shared.annotated(translated, original: original) {
+                Text(annotated)
+            } else {
+                Text(translated)
+            }
+        }
+        .font(font)
+        .fixedSize(horizontal: false, vertical: true)
+        .textSelection(.enabled)
     }
 
     private func styled(_ text: String) -> some View {
@@ -725,6 +744,7 @@ private struct ImageBlockView: View {
                     .interpolation(.high)
                     .aspectRatio(contentMode: .fit)
                     .overlay { translationOverlay }
+                    .overlay { currencyBubbleOverlay }
                     .overlay { debugRegionOverlay }
                     .frame(maxWidth: min(max(asset.pixelSize.width, 1), 760), alignment: .leading)
                 statusLine
@@ -782,6 +802,60 @@ private struct ImageBlockView: View {
             }
             .allowsHitTesting(false)
         }
+    }
+
+    /// 원화 환산 말풍선: 이미지 속 외국 금액 바로 아래에 작은 반투명 흰색 둥근 칸으로 얹는다(원문보기에서는 없음).
+    /// 번역 대상이 아닌 가격 줄도 포함하며, 금액 자체는 가리지 않는다.
+    @ViewBuilder
+    private var currencyBubbleOverlay: some View {
+        let store = ExchangeRateStore.shared
+        if model.displayMode != .original, store.hasRates, !regions.isEmpty {
+            GeometryReader { geo in
+                let bounds = CGRect(origin: .zero, size: geo.size)
+                let placements = currencyPlacements(in: bounds, store: store)
+                ForEach(Array(placements.enumerated()), id: \.offset) { _, placement in
+                    Text(placement.label)
+                        .font(.system(size: placement.fontSize, weight: .semibold))
+                        .foregroundStyle(Color(white: 0.2))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(Color.white.opacity(0.86)))
+                        .shadow(color: .black.opacity(0.25), radius: 1.5, y: 1)
+                        .fixedSize()
+                        .position(x: placement.frame.midX, y: placement.frame.midY)
+                }
+            }
+            .allowsHitTesting(false)
+        }
+    }
+
+    private struct CurrencyPlacement {
+        let label: String
+        let fontSize: CGFloat
+        let frame: CGRect
+    }
+
+    private func currencyPlacements(in bounds: CGRect, store: ExchangeRateStore) -> [CurrencyPlacement] {
+        var occupied: [CGRect] = []
+        var result: [CurrencyPlacement] = []
+        for region in regions {
+            // OCRRegion 좌표는 원점 좌상단 정규화(y가 아래로 증가)다. 이미지 안내 글자와 같은 문맥으로 ¥ 등의 언어 단서를 정한다.
+            let context = CurrencyContext(textLang: ExchangeRateStore.dominantLanguage(of: region.text), text: region.text)
+            let specs = CurrencyBubbleLayout.specs(text: region.text, lineBox: region.box, glyphBoxes: region.glyphBoxes,
+                                                  glyphTexts: region.glyphTexts, readingDownIsIncreasingY: true,
+                                                  context: context, krwPer: store.krwPer)
+            for spec in specs {
+                let price = CGRect(x: spec.price.minX * bounds.width, y: spec.price.minY * bounds.height,
+                                   width: spec.price.width * bounds.width, height: spec.price.height * bounds.height)
+                guard price.width > 1, price.height > 1 else { continue }
+                let fontSize = max(9, min(13, price.height * 0.6))
+                let size = CGSize(width: CGFloat(spec.label.count) * fontSize * 0.95 + 14, height: fontSize + 6)
+                let frame = CurrencyBubbleLayout.place(size: size, price: price, in: bounds, occupied: occupied, belowIsLargerY: true)
+                occupied.append(frame)
+                result.append(CurrencyPlacement(label: spec.label, fontSize: fontSize, frame: frame))
+            }
+        }
+        return result
     }
 
     /// 디버그용 번호 사각형(기본 숨김, 보기 메뉴에서 켤 수 있음)

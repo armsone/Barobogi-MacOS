@@ -99,6 +99,13 @@ const ENGINE_TITLES = { google: "구글", deepl: "DeepL", papago: "Papago" };
 function renderLine(id, text) {
   $(id).textContent = text;
   $(id).hidden = !text;
+  if (id === "summary") syncPhaseTimes();
+}
+
+// 번역·다듬기 시간과 요약(총 문장 수)은 한 줄 상자에 같이 있으므로, 보이는 항목이 하나라도 있을 때만 상자를 연다.
+function syncPhaseTimes() {
+  const box = $("phaseTimes");
+  box.hidden = [...box.children].every((el) => el.hidden || !el.textContent);
 }
 
 // MARK: 경과 시간(클릭 시각부터, 진행 중이면 0.1초마다 갱신, 끝나면 그 자리에서 멈춤)
@@ -112,15 +119,63 @@ function renderElapsed() {
   elapsedTimer = 0;
   if (!action || !Number.isFinite(action.startedAt)) {
     $("elapsed").textContent = "";
+    renderPhaseTimes(null, 0);
     return;
   }
   if (action.outcome !== null) {
     $("elapsed").textContent = Number.isFinite(action.endedAt) ? seconds(action.endedAt) : "";
+    renderPhaseTimes(action, Number.isFinite(action.endedAt) ? action.endedAt : 0);
     return;
   }
-  const paint = () => { $("elapsed").textContent = seconds(Date.now() - action.startedAt); };
+  const paint = () => {
+    $("elapsed").textContent = seconds(Date.now() - action.startedAt);
+    renderPhaseTimes(action, Date.now() - action.startedAt);
+  };
   paint();
   elapsedTimer = setInterval(paint, 100);
+}
+
+/** 번역·다듬기 시간을 두 줄로(content.js가 잰 벽시계 구간). 번역=클릭~다듬기 시작 직전(다듬기가 없으면 끝까지),
+ *  다듬기=첫 다듬기 요청~마지막 다듬기 종료(겹친 요청은 한 구간). now: 클릭부터 지금(끝났으면 끝난 시각, ms). */
+function renderPhaseTimes(action, now) {
+  const box = $("phaseTimes");
+  if (!action || !Number.isFinite(action.startedAt)) {
+    $("translateTime").textContent = "";
+    $("translateTime").hidden = true;
+    $("refineTime").textContent = "";
+    $("refineTime").hidden = true;
+    syncPhaseTimes();
+    return;
+  }
+  $("translateTime").hidden = false;
+  const refine = action.refine && Number.isFinite(action.refine.a) ? action.refine : null;
+  const translateEnd = refine ? refine.a : now;
+  $("translateTime").textContent = `번역 ${seconds(translateEnd)}`;
+  const refineLine = $("refineTime");
+  refineLine.title = "";
+  if (refine) {
+    const stat = action.refineStat;
+    const running = !Number.isFinite(refine.b);
+    const time = seconds((running ? now : refine.b) - refine.a);
+    let text = `다듬기 ${time}`;
+    if (stat && !running && stat.req > 0) {
+      if (stat.fail > 0 && stat.ok === 0) text = /unavailable|unsupported_language/.test(stat.code || "") ? "다듬기 사용불가" : "다듬기 실패";
+      else if (stat.fail > 0) text = `다듬기 ${time} · 일부 실패`;
+      else if (stat.ok > 0 && stat.legacy === 0 && stat.fresh === 0) text = "다듬기 재사용";
+    }
+    if (stat && stat.ok > 0 && stat.legacy === 0) {
+      refineLine.title = `선택 ${stat.sel}문장 · AI 처리 ${stat.fresh} · 재사용 ${stat.hit} · 바뀜 ${stat.changed}`;
+    }
+    refineLine.textContent = text;
+    refineLine.hidden = false;
+  } else if (action.outcome === null) {
+    refineLine.textContent = "다듬기 –";
+    refineLine.hidden = false;
+  } else {
+    refineLine.textContent = "";
+    refineLine.hidden = true;
+  }
+  syncPhaseTimes();
 }
 
 /** 이 탭에서 아직 기다리는 Barobogi 요청의 최신 진행(배경이 요청 id·엔진·허용 토큰으로 거른 것). kind: "text"|"ocr"|null(아무거나) */
@@ -420,12 +475,30 @@ function renderExternalPage(state, engine, buttonId, spinnerId, title) {
   if (IS_SAFARI) button.title = `Safari에서는 ${title} 옵션을 지원하지 않습니다.`;
 }
 
+// 원화 환산 환율 출처 줄. 받은 적이 없으면 안내 문구만(지어낸 금액 없음), 저장 환율이면 '저장 환율'과 기준 시각을 함께 보여 준다.
+async function renderFx() {
+  try {
+    const fx = await call({ cmd: "fxStatus", reason: "popup" });
+    $("fxText").textContent = fx.has ? fx.text : (fx.message || "");
+    $("fxLine").title = fx.has ? fx.detail || "" : "";
+    const link = $("fxLink");
+    link.hidden = !(fx.has && fx.attribution);
+    if (fx.attribution) {
+      link.textContent = fx.attribution.text;
+      link.href = fx.attribution.url;
+    }
+  } catch {
+    // 환율 줄만 비워 둔다(번역 상태 표시에는 영향 없음).
+  }
+}
+
 async function refresh() {
   try {
     render(await call({ cmd: "popupState" }));
   } catch (error) {
     showError(error.message);
   }
+  renderFx();
 }
 
 $("agree").addEventListener("click", async () => {
@@ -439,9 +512,8 @@ $("target").addEventListener("change", async (event) => {
 });
 
 $("langPack").addEventListener("click", async () => {
-  // Barobogi에 실제 다운로드 화면을 열어 달라고 요청한다(언어/지역 설정이 아니다). Safari처럼 이 확장이 직접 그 화면을
-  // 열 수 없을 때는 응답에 안내 문구가 실려 오므로 그걸 그대로 보여준다(엉뚱한 설정을 연 것처럼 꾸미지 않는다).
-  // 연결이 안 돼 있을 때만(Barobogi 미실행 등) 가장 가까운 시스템 설정으로 대체한다.
+  // 번역 언어는 시스템 설정(일반 › 언어 및 지역 › 번역 언어)에서 모든 앱이 함께 받는다. Barobogi가 그 창을 열고, 응답의 안내
+  // 문구(번역 언어를 누르라는 설명)를 그대로 보여준다. Barobogi에 연결되지 않을 때만 같은 창을 확장에서 대신 연다(보안 설정은 건드리지 않음).
   try {
     const response = await call({ cmd: "openLanguagePack" });
     if (response.message) showError(response.message);

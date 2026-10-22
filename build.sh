@@ -103,7 +103,7 @@ rm -f "$BROWSER_ICON_SOURCE"
 stage_extension() {
   local dest="$1" manifest="$2"
   mkdir -p "$dest/icons" "$dest/fonts" "$dest/provider-logos"
-  cp "$BROWSER_DIR/shared/background.js" "$BROWSER_DIR/shared/content.js" \
+  cp "$BROWSER_DIR/shared/fx.js" "$BROWSER_DIR/shared/background.js" "$BROWSER_DIR/shared/content.js" \
      "$BROWSER_DIR/shared/popup.html" "$BROWSER_DIR/shared/popup.js" "$BROWSER_DIR/shared/popup.css" "$dest/"
   cp "$ICON_DIR"/icon*.png "$dest/icons/"
   # 팝업의 구글·DeepL 버튼 공식 로고(번들 안 로컬 파일, 네트워크로 받지 않음).
@@ -143,7 +143,8 @@ xcrun swiftc \
   "$ROOT_DIR/Sources/BundledFonts.swift" \
   "$ROOT_DIR/Sources/ImageTextRecognizer.swift" \
   "$ROOT_DIR/Sources/DocumentTextRecognizer.swift" \
-  "$ROOT_DIR/Sources/AppleTranslationRefiner.swift"
+  "$ROOT_DIR/Sources/AppleTranslationRefiner.swift" \
+  "$ROOT_DIR/Sources/CurrencyAnnotation.swift"
 cp "$ROOT_DIR/SafariExtension/Info.plist" "$SAFARI_APPEX/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" "$SAFARI_APPEX/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $APP_BUILD" "$SAFARI_APPEX/Contents/Info.plist"
@@ -154,6 +155,8 @@ echo "==> 리소스/Info.plist/프레임워크 복사"
 cp "$ROOT_DIR/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 cp "$ROOT_DIR/Resources/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 # 외부 AI(AIBI 0.5.3) 공통 런타임과 제공사 레지스트리 — 메일 번역기 원본과 같은 파일
+# 원화 환산 공용 파서(메일 서식 보기의 격리된 WKWebView 스크립트가 읽는 번들 파일 — 브라우저 확장과 같은 fx.js)
+cp "$BROWSER_DIR/shared/fx.js" "$APP_BUNDLE/Contents/Resources/fx.js"
 cp "$ROOT_DIR/Resources/aibi-browser-runtime.js" "$ROOT_DIR/Resources/aibi-providers.json" "$APP_BUNDLE/Contents/Resources/"
 # 화면 번역문 글꼴(고딕/명조/손글씨, 패키지 번들). 앱 실행 중 프로세스 범위로만 등록하며 시스템에 설치하지 않는다.
 mkdir -p "$APP_BUNDLE/Contents/Resources/Fonts"

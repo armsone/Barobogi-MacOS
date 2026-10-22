@@ -22,6 +22,10 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
         // 앱 실행, 새 URL 프로토콜이나 권한 없음)으로 Barobogi 앱 자체를 열고, 앱에 있는 통합 언어 팩 다운로드 기능을
         // 쓰라고 분명히 안내한다.
         return BrowserEngine(translator: translator, isEnabled: { true }, openLanguagePack: {
+            // 먼저 시스템 설정의 언어 및 지역(번역 언어는 모든 앱이 공유)을 연다. 열지 못할 때만 아래 앱 열기로 대체한다.
+            if await MainActor.run(body: { NSWorkspace.shared.open(BrowserLanguageSettings.regionURL) }) {
+                return BrowserLanguageSettings.guidance
+            }
             let launched = await MainActor.run { () -> Bool in
                 guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: BrowserBridge.appBundleID) else {
                     return false

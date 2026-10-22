@@ -625,6 +625,8 @@ final class AppModel {
     /// 대기 중인 세그먼트가 있으면 해당 언어 그룹으로 translationTask를 (재)시작시킨다.
     private func scheduleTranslation() {
         guard document != nil else { return }
+        // 원화 환산 환율: 저장된 값은 바로 쓰고 15분이 지났으면 뒤에서 갱신한다(번역은 기다리지 않는다).
+        ExchangeRateStore.shared.refreshIfNeeded()
         if backend.isExternal {
             scheduleExternal()
             return

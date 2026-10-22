@@ -155,11 +155,10 @@ final class BrowserIntegration: ObservableObject {
                                        refiner: AppleBrowserRefiner(),
                                        isEnabled: { true },
                                        openLanguagePack: {
-                await MainActor.run {
-                    NSApp.activate(ignoringOtherApps: true)
-                    MailWindowCoordinator.shared.openLanguagePackDownload()
-                }
-                return nil // 이 앱 안에서 실제 다운로드 시트를 바로 열었으므로 추가 설명이 필요 없다.
+                // 번역 언어 내려받기는 시스템 설정에서 모든 앱이 공유하므로 그 창을 연다. 앱 안의 내려받기 화면은
+                // 설정 › 브라우저 번역에 수동용으로 그대로 있다.
+                let opened = await MainActor.run { NSWorkspace.shared.open(BrowserLanguageSettings.regionURL) }
+                return opened ? BrowserLanguageSettings.guidance : BrowserLanguageSettings.failure
             })
             server = BrowserBridgeServer(engine: engine)
         }

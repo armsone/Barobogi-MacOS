@@ -32,6 +32,8 @@ final class TranslationPatchesView: NSView {
     }
 
     private var records: [PatchRecord] = []
+    /// 원화 환산 말풍선(번역 패치와 별개의 작은 반투명 흰색 둥근 칸). 원문 보기·새 캡처·영역 이동 때 패치와 함께 지워진다.
+    private var bubbleViews: [NSView] = []
 
     private var isDark: Bool {
         effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
@@ -40,6 +42,50 @@ final class TranslationPatchesView: NSView {
     func removeAllPatches() {
         subviews.forEach { $0.removeFromSuperview() }
         records.removeAll()
+        bubbleViews.removeAll()
+    }
+
+    /// 외국 금액 바로 아래에 "약 N원" 말풍선을 놓는다(원래 금액은 가리지 않고 대체하지도 않는다). 이전 말풍선은 모두 바꾼다.
+    /// 금액 칸은 이 뷰 안의 Vision 정규화 좌표(원점 좌하단). 경계에서는 안쪽으로 밀고, 금액 칸을 덮지 않는 자리를 고른다.
+    func setCurrencyBubbles(_ specs: [CurrencyBubbleSpec]) {
+        bubbleViews.forEach { $0.removeFromSuperview() }
+        bubbleViews.removeAll()
+        guard bounds.width > 20, bounds.height > 20 else { return }
+        var occupied: [CGRect] = []
+        for spec in specs {
+            let price = CGRect(x: spec.price.minX * bounds.width, y: spec.price.minY * bounds.height,
+                               width: spec.price.width * bounds.width, height: spec.price.height * bounds.height)
+            guard price.width > 1, price.height > 1 else { continue }
+            let fontSize = max(9, min(13, price.height * 0.6))
+            let label = NSTextField(labelWithString: spec.label)
+            label.font = .systemFont(ofSize: fontSize, weight: .semibold)
+            label.textColor = NSColor(calibratedWhite: 0.2, alpha: 1)
+            label.isBordered = false
+            label.drawsBackground = false
+            label.sizeToFit()
+            let size = NSSize(width: ceil(label.frame.width) + 12, height: ceil(label.frame.height) + 2)
+            // 뷰는 뒤집히지 않았으므로 y가 작을수록 아래다(belowIsLargerY: false).
+            let frame = CurrencyBubbleLayout.place(size: size, price: price, in: bounds, occupied: occupied, belowIsLargerY: false)
+            let bubble = NSView(frame: frame.integral)
+            bubble.wantsLayer = true
+            bubble.layer?.backgroundColor = NSColor(calibratedWhite: 1, alpha: 0.86).cgColor
+            bubble.layer?.cornerRadius = bubble.frame.height / 2
+            bubble.layer?.shadowColor = NSColor.black.cgColor
+            bubble.layer?.shadowOpacity = 0.25
+            bubble.layer?.shadowRadius = 2
+            bubble.layer?.shadowOffset = CGSize(width: 0, height: -1)
+            label.frame = NSRect(x: (bubble.frame.width - label.frame.width) / 2, y: (bubble.frame.height - label.frame.height) / 2,
+                                 width: label.frame.width, height: label.frame.height)
+            bubble.addSubview(label)
+            addSubview(bubble)
+            bubbleViews.append(bubble)
+            occupied.append(bubble.frame)
+        }
+    }
+
+    /// 번역 패치가 나중에 추가돼도 말풍선이 패치 위에 보이도록 맨 위로 올린다.
+    private func raiseBubbles() {
+        for bubble in bubbleViews { addSubview(bubble) }
     }
 
     /// 자동/수동 설정과 줄의 추출 배경색으로부터 실제 배경색·글자색을 계산한다.
@@ -126,6 +172,7 @@ final class TranslationPatchesView: NSView {
         label.textColor = colors.text
 
         records.append(PatchRecord(patch: patch, tint: tint, label: label))
+        raiseBubbles()
     }
 
     /// Apple Intelligence 다듬기 등으로 같은 줄의 번역문만 바꾼다. 새 패치를 추가하지 않고(받은 줄 수에 영향 없음),

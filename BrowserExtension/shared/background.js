@@ -12,6 +12,10 @@
 // - 전역 켜기/끄기는 세대(control.epoch)로 직렬화한다. 끄기(원문 보기·권한 철회·동의/자동 해제)는 요청 즉시 세대를 올리고,
 //   모든 비동기 흐름은 탭에 보내기 직전 자기 세대가 그대로인지와 최신 동의·자동·권한을 다시 확인한다.
 
+// 원화 환산(fx.js): Chrome·Whale 서비스 워커는 importScripts, Safari 이벤트 페이지는 manifest scripts 순서로 먼저 불러온다.
+if (typeof importScripts === "function" && !globalThis.BarobogiFX) {
+  try { importScripts("fx.js"); } catch { /* 환율 기능만 꺼진다 */ }
+}
 const api = globalThis.browser ?? globalThis.chrome;
 const IS_SAFARI = api.runtime.getURL("").startsWith("safari-web-extension:");
 const HOST_NAME = "com.local.screentranslator.browser";
@@ -19,7 +23,7 @@ const SAFARI_APP_ID = "com.local.screentranslator";
 const TARGETS = ["ko", "en", "ja", "zh-Hans", "zh-Hant"];
 const ALL_URLS = "<all_urls>";
 const TAB_MESSAGE_TIMEOUT = 5000;
-const LIMITS = { texts: 150, textLength: 5000, chars: 40000, regions: 16, glyphsPerItem: 128, glyphsTotal: 8192,
+const LIMITS = { texts: 150, textLength: 5000, chars: 40000, regions: 16, glyphsPerItem: 128, glyphsTotal: 8192, fxPerImage: 48,
                  refineItems: 16, refineItemChars: 700, refineChars: 4000, refineContextChars: 300, refineContextTotal: 1200 };
 // 웹 번역 엔진은 Barobogi가 항목마다 차례로 공식 페이지에 넣으므로 요청을 작게 하고 오래 기다린다(페이지 확인을 사용자가 할 시간 포함).
 // DeepL은 네이티브가 입력 한도(1400 UTF-16, 식별자 포함) 안에서 여러 항목을 묶어 보내므로 항목 수만 120까지 받는다
@@ -42,6 +46,21 @@ const SPINNER_FRAMES = 8;
 const SPINNER_INTERVAL_MS = 150;
 const DEFAULTS = { consent: false, target: "ko", images: true, automaticEnabled: false, engine: LOCAL_ENGINE, engineConsents: [],
                    fontStyle: "auto" };
+
+// MARK: - 원화 환산 환율(번역 내용과 별도). 익명 고정 공개 주소 GET만 하며 페이지 글자·이미지·주소는 보내지 않는다.
+const fx = globalThis.BarobogiFX ? globalThis.BarobogiFX.createStore(api) : null;
+/** 환율 갱신 소식을 받을 탭(환율을 한 번이라도 물어본 내용 스크립트). */
+const fxTabs = new Set();
+if (fx) {
+  fx.onUpdate((snapshot) => {
+    for (const tabId of Array.from(fxTabs)) {
+      Promise.resolve(api.tabs.sendMessage(tabId, { cmd: "fxUpdate", fx: snapshot })).catch(() => fxTabs.delete(tabId));
+    }
+  });
+  // 시작·재접속·창 앞으로 올 때 갱신(15분 안에 시도했으면 건너뛰고, 연결이 돌아오면 최근 실패해도 다시 시도한다).
+  fx.refresh("launch", false).catch(() => {});
+  globalThis.addEventListener?.("online", () => { fx.refresh("online", true).catch(() => {}); });
+}
 
 function codedError(code, message) {
   const error = new Error(message || code);
@@ -892,6 +911,18 @@ function validTexts(texts, engine) {
   return total <= (external ? EXTERNAL_LIMITS.chars : LIMITS.chars);
 }
 
+/** 네이티브 부분 결과 항목을 요청 개수·글자 한도 안의 { i, t }로만 걸러 낸다(형식이 틀린 항목은 버린다). */
+function relayablePartial(items, count) {
+  if (!Array.isArray(items) || items.length > LIMITS.texts) return [];
+  const clean = [];
+  for (const item of items) {
+    if (item && Number.isInteger(item.i) && item.i >= 0 && item.i < count && typeof item.t === "string" && item.t.length <= LIMITS.textLength * 4) {
+      clean.push({ i: item.i, t: item.t });
+    }
+  }
+  return clean;
+}
+
 /** 내용 스크립트가 쓴 엔진이 지금 설정과 같을 때만 보낸다(엔진을 바꾼 직후 늦게 온 요청은 버린다). */
 function requestEngine(message, settings) {
   const engine = typeof message.engine === "string" ? message.engine : LOCAL_ENGINE;
@@ -1036,7 +1067,17 @@ function sanitizeImages(images) {
         ...(Number.isInteger(item.uc) && item.uc > 0 && item.uc < 100000 ? { uc: item.uc } : {})
       };
     }),
-    langs: sanitizeLangCounts(image?.langs)
+    langs: sanitizeLangCounts(image?.langs),
+    // 번역 대상이 아닌 줄(가격 숫자만 있는 줄 등)의 원화 환산 후보: 위치·인식 원문·글자 상자만(번역문·가림 조각 없음).
+    fx: (Array.isArray(image?.fx) ? image.fx : []).slice(0, LIMITS.fxPerImage).filter((item) =>
+      item && typeof item.o === "string" && item.o.length > 0 &&
+      ["x", "y", "w", "h"].every((key) => Number.isFinite(item[key]) && item[key] >= -0.5 && item[key] <= 1.5)
+    ).map((item) => {
+      const { boxes: g, letters: gl } = sanitizeGlyphs(item.g, glyphBudget, item.gl);
+      glyphBudget -= g.length;
+      return { x: item.x, y: item.y, w: item.w, h: item.h, o: item.o.slice(0, 300),
+               ...(g.length ? { g } : {}), ...(g.length && gl.length === g.length ? { gl } : {}) };
+    })
   }));
 }
 
@@ -1054,14 +1095,30 @@ async function handleContent(message, sender) {
     throw codedError("cancelled", "");
   }
   switch (message.cmd) {
+    case "fxRates": {
+      // 저장된 환율을 바로 돌려주고 뒤에서 갱신한다(번역을 기다리게 하지 않는다). 동의·권한과 무관한 공개 숫자 조회.
+      if (!fx) return { ok: true, has: false, krwPer: {}, meta: null };
+      fxTabs.add(tab.id);
+      const reason = ["translate", "foreground", "online", "launch"].includes(message.reason) ? message.reason : "get";
+      return { ...(await fx.get(reason)) };
+    }
     case "translate": {
       if (!settings.consent) throw codedError("consent_required", "툴바의 Barobogi 아이콘에서 먼저 동의해 주세요.");
       const engine = requestEngine(message, settings);
       if (!TARGETS.includes(message.target) || !validTexts(message.texts, engine)) throw codedError("bad_request", "잘못된 번역 요청입니다.");
       const id = native.nextId("t");
       const line = timelineFor(tab.id, message.action);
+      const partialKey = engine === LOCAL_ENGINE && typeof message.partialKey === "string" && /^p[0-9]+-[a-z0-9]{1,12}$/.test(message.partialKey)
+        ? message.partialKey : null;
       const response = await trackedRequest(line, "text", (r) => {
-        const onProgress = progressRecorder(tab.id, id, "text", engine, null, line, r);
+        const record = progressRecorder(tab.id, id, "text", engine, null, line, r);
+        // 부분 결과(phase "partial")는 진행 기록과 따로 이 요청의 탭(최상위 프레임)에만 전달한다. 로그·진행 기록에는 남기지 않는다.
+        const onProgress = record ? (frame) => {
+          if (frame.phase !== "partial") return record(frame);
+          if (!partialKey || epoch !== control.epoch || !native.pending.has(id)) return;
+          const items = relayablePartial(frame.items, message.texts.length);
+          if (items.length) Promise.resolve(api.tabs.sendMessage(tab.id, { cmd: "partial", key: partialKey, items }, { frameId: 0 })).catch(() => {});
+        } : null;
         return native.request(
           { v: 1, type: "translate", id, target: message.target, texts: message.texts, engine, ...(onProgress ? { progress: true } : {}) },
           { timeout: engineTimeout(engine, TIMEOUT.text), tabId: tab.id, kind: "text", onProgress });
@@ -1177,7 +1234,13 @@ async function handleContent(message, sender) {
       const items = Array.isArray(response.items)
         ? response.items.filter((it) => it && typeof it.k === "string" && typeof it.t === "string" && it.t.length <= LIMITS.textLength)
         : [];
-      return { ok: true, items };
+      // meta: 네이티브가 센 개수와 결과 코드만 통과시킨다(옛 앱은 meta가 없다).
+      const raw = response.meta;
+      const num = (v) => Number.isInteger(v) && v >= 0 && v <= 100000 ? v : null;
+      const meta = raw && typeof raw === "object" && [raw.sel, raw.hit, raw.fresh, raw.changed, raw.ms].every((v) => num(v) !== null)
+        && typeof raw.out === "string" && /^[a-z_]{1,40}$/.test(raw.out)
+        ? { sel: raw.sel, hit: raw.hit, fresh: raw.fresh, changed: raw.changed, ms: raw.ms, out: raw.out } : null;
+      return { ok: true, items, meta };
     }
     case "endExternalPage": {
       // 내용 스크립트가 1회성 Google·DeepL 번역을 스스로 끝냈다(이동·중지·설정 변경). 그 문서의 토큰일 때만 지운다.
@@ -1236,7 +1299,7 @@ async function injectContent(tabId, origin) {
     throw codedError("restricted_page", "이 페이지는 브라우저 정책상 확장이 접근할 수 없습니다.");
   }
   try {
-    await api.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
+    await api.scripting.executeScript({ target: { tabId }, files: ["fx.js", "content.js"] });
   } catch {
     throw codedError("restricted_page", "이 페이지는 브라우저 정책상 확장이 접근할 수 없습니다.");
   }
@@ -1395,6 +1458,11 @@ async function handlePopup(message) {
       return { ok: true, settings, origin, engine, page, grant, safari: IS_SAFARI, externalEngines: EXTERNAL_ENGINES,
                native: tabId !== null ? nativeProgressFor(tabId) : [],
                timeline: tabId !== null ? timelineSnapshot(tabId) : null, deadline: tabId !== null ? deadlineSnapshot(tabId) : null };
+    }
+    case "fxStatus": {
+      if (!fx) return { ok: true, has: false, message: "" };
+      if (message.reason) fx.refresh("foreground", message.reason === "online").catch(() => {});
+      return { ...(await fx.snapshot()), krwPer: undefined };
     }
     case "pageProgress": {
       // 진행 중 팝업 갱신: Barobogi 연결 확인(hello) 없이 이 탭의 내용 스크립트 상태와 기다리는 요청의 진행만 다시 읽는다.
@@ -1604,6 +1672,7 @@ api.tabs.onUpdated.addListener((tabId, info, tab) => {
 });
 
 api.tabs.onRemoved.addListener((tabId) => {
+  fxTabs.delete(tabId);
   externalPages.delete(tabId);
   captures.delete(tabId);
   captureTickets.delete(tabId);
@@ -1628,6 +1697,7 @@ api.tabs.onRemoved.addListener((tabId) => {
 
 // 탭을 바꿔 들어갈 때, 전역 자동 번역이 유효한데 아직 주입·설정되지 않았으면(예: 켜기 전부터 열려 있던 탭) 이어받는다.
 api.tabs.onActivated.addListener(({ tabId }) => {
+  fx?.refresh("foreground", false).catch(() => {});
   applyAutoToTab(tabId, control.epoch).catch(() => {});
 });
 
@@ -1649,6 +1719,7 @@ api.storage.onChanged.addListener((changes, area) => {
 // 브라우저 시작(복원된 탭 포함): 저장 상태와 실제 권한을 맞춘 뒤 유효할 때만 각 창의 보이는 탭에 적용한다.
 // 나머지 탭은 활성화·로드 완료 이벤트 때 처리한다(탭별 반복 확인 없음).
 api.runtime.onStartup?.addListener(async () => {
+  fx?.refresh("launch", false).catch(() => {});
   if (!(await reconcile())) return;
   const epoch = control.epoch;
   let active = [];
