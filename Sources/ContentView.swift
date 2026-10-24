@@ -81,6 +81,16 @@ struct ContentView: View {
             .help("Mail에서 현재 선택된 메시지를 가져와 번역합니다 (⇧⌘T, 전역 \(GlobalHotKey.mailDisplayString))")
             .disabled(model.isLoading)
         }
+        ToolbarItem(id: "trash-mail", placement: .primaryAction) {
+            Button {
+                if let id = model.document?.id { model.trashCurrentMail(confirmedDocumentID: id) }
+            } label: {
+                Label("메일 삭제", systemImage: "trash")
+            }
+            .disabled(!model.canTrashCurrentMail)
+            .help("지금 번역 중인 이 메일을 Mail 휴지통으로 옮깁니다 (영구 삭제 아님)")
+            .accessibilityLabel("이 메일을 휴지통으로 이동")
+        }
         ToolbarItem(id: "open-file", placement: .primaryAction) {
             Button {
                 model.showImporter = true

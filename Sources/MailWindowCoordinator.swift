@@ -31,6 +31,11 @@ final class MailWindowCoordinator: NSObject, NSWindowDelegate {
         window === mailWindow
     }
 
+    /// 코디네이터가 보유한 메일 번역 창을 직접 닫는다(windowWillClose에서 메일 내용을 지운다).
+    func closeMailWindow() {
+        mailWindow?.close()
+    }
+
     func showMailWindow() {
         NSApp.activate()
         let window = mailWindow ?? makeMailWindow()

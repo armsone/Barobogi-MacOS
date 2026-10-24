@@ -147,6 +147,9 @@ final class AppModel {
     private(set) var loadingMessage = ""
     var errorMessage: String?
     var errorNeedsAutomationSettings = false
+    /// 현재 표시 중인 문서(documentID)가 가리키는 Mail 메시지. 파일/이미지 문서에는 없다.
+    private var mailRef: (documentID: UUID, ref: MailMessageRef)?
+    private(set) var isTrashingMail = false
     var showImporter = false
 
     // 설정
@@ -276,6 +279,7 @@ final class AppModel {
                 // 그사이 다른 메시지가 요청되었으면 이 결과는 버린다.
                 guard generation == documentGeneration else { return }
                 present(doc)
+                mailRef = selection.ref.map { (doc.id, $0) }
                 // 이 경로는 사용자가 선택 메일 번역 버튼/서비스를 직접 실행한 경우에만 호출된다.
                 if backend.isExternal { requestExternalTranslation() }
                 if remoteImageCount > 0 {
@@ -287,6 +291,28 @@ final class AppModel {
                 failLoading(error)
             }
         }
+    }
+
+    var canTrashCurrentMail: Bool {
+        guard let document, let mailRef else { return false }
+        return mailRef.documentID == document.id && !isLoading && !isTrashingMail
+    }
+
+    /// 지금 번역 중인 메시지 하나만 Mail 휴지통으로 옮긴다. 실패하면 창과 번역을 그대로 두고 오류만 표시한다.
+    func trashCurrentMail(confirmedDocumentID: UUID) {
+        guard canTrashCurrentMail, let document, let mailRef,
+              document.id == confirmedDocumentID, mailRef.documentID == confirmedDocumentID else { return }
+        isTrashingMail = true
+        defer { isTrashingMail = false }
+        do {
+            try MailBridge.moveToTrash(mailRef.ref)
+        } catch {
+            errorMessage = error.localizedDescription
+            errorNeedsAutomationSettings = (error as? MailBridgeError) == .notAuthorized
+            return
+        }
+        guard self.document?.id == document.id else { return }
+        MailWindowCoordinator.shared.closeMailWindow()
     }
 
     func open(url: URL) {
@@ -305,6 +331,7 @@ final class AppModel {
     }
 
     func closeDocument() {
+        mailRef = nil
         cancelAllWork()
         consentRequest = nil
         document = nil
@@ -320,6 +347,7 @@ final class AppModel {
     }
 
     private func beginLoading(_ message: String) {
+        mailRef = nil
         cancelAllWork()
         consentRequest = nil
         document = nil
