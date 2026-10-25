@@ -1299,7 +1299,10 @@ enum ImageTextRecognizer {
     /// 원본 글자 픽셀 분석(GlyphAnalyzer)을 적용한 영역. 실제 잉크로 좁힌 글자 상자, 글자 대조로 고른 글꼴 갈래,
     /// 굵기·글자색, (요청 시) 배경 복원 조각을 담는다. 분석이 실패한 값은 기존 값을 그대로 둔다.
     /// - Parameter restoreIDs: 주어지면 이 항목들만 배경 복원 조각을 만든다(번역해 그리지 않을 항목의 조각은 버려지므로).
-    static func analyzed(_ regions: [OCRRegion], image: CGImage, restoration: Bool, restoreIDs: Set<String>? = nil) -> [OCRRegion] {
+    /// - Parameter onRegion: 주어지면 항목(인식한 문단 하나) 분석이 끝나는 즉시 그 결과를 알린다(restoration이 true일 때).
+    ///   다른 항목의 분석이 끝나기를 기다리지 않는다. 여러 코어에서 동시에 불리므로 스레드에 안전해야 하며, 반환값과 같은 항목이다.
+    static func analyzed(_ regions: [OCRRegion], image: CGImage, restoration: Bool, restoreIDs: Set<String>? = nil,
+                         onRegion: ((OCRRegion) -> Void)? = nil) -> [OCRRegion] {
         guard !regions.isEmpty, let canvas = GlyphAnalyzer.Canvas(image) else { return regions }
         var occupied = [Bool](repeating: false, count: canvas.width * canvas.height)
         for region in regions {
@@ -1317,17 +1320,11 @@ enum ImageTextRecognizer {
         let furigana = furiganaAttachments(regions, inkBoxes: measures.map(\.inkBoxes), canvas: canvas)
         let attached = Set(furigana.values.joined())
         let kept = regions.indices.filter { !attached.contains($0) }
-        let patches: [GlyphAnalyzer.Restoration?] = restoration ? GlyphAnalyzer.concurrentMap(kept.count) { k in
-            let index = kept[k]
-            if let restoreIDs, !restoreIDs.contains(regions[index].id) { return nil }
-            let annotations = (furigana[index] ?? []).flatMap { measures[$0].targets }
-            return GlyphAnalyzer.restoration(measures[index].targets + annotations, canvas: canvas, occupied: occupied)
-        } : Array(repeating: nil, count: kept.count)
-        return kept.enumerated().map { k, index in
+        // 항목 하나의 분석 결과(복원 조각 포함)를 만든다. 화면 표시 쪽이 복원 조각을 못 쓸 때(응답 크기 상한 등) 대신 가릴 상자는
+        // 본문 글자 상자(g) 밖의 지울 대상이다.
+        func build(_ index: Int, patch: GlyphAnalyzer.Restoration?) -> OCRRegion {
             let region = regions[index]
             let measure = measures[index]
-            let patch = patches[k]
-            // 화면 표시 쪽이 복원 조각을 못 쓸 때(응답 크기 상한 등) 대신 가릴 상자: 본문 글자 상자(g) 밖의 지울 대상.
             let cover = measure.extraCoverBoxes + (furigana[index] ?? []).flatMap { measures[$0].coverBoxes }
             let typography = GlyphTypography(inkBoxes: measure.inkBoxes, maskedGlyphs: measure.maskedGlyphs,
                                              fontStyle: measure.fontStyle, bold: measure.bold,
@@ -1340,6 +1337,19 @@ enum ImageTextRecognizer {
             return OCRRegion(id: region.id, text: region.text, box: region.box, backgroundHex: measure.backgroundHex ?? region.backgroundHex,
                              foregroundHex: region.foregroundHex, glyphBoxes: measure.inkBoxes, glyphTexts: region.glyphTexts,
                              fontStyle: style, typography: typography, annotationBoxes: region.annotationBoxes)
+        }
+        guard restoration else { return kept.map { build($0, patch: nil) } }
+        // 복원 조각은 항목마다 독립적으로 만들고, 항목 하나가 끝나는 즉시 알린다(같은 그림의 다른 문단·말풍선을 기다리지 않는다).
+        return GlyphAnalyzer.concurrentMap(kept.count) { k in
+            let index = kept[k]
+            var patch: GlyphAnalyzer.Restoration?
+            if restoreIDs?.contains(regions[index].id) ?? true {
+                let annotations = (furigana[index] ?? []).flatMap { measures[$0].targets }
+                patch = GlyphAnalyzer.restoration(measures[index].targets + annotations, canvas: canvas, occupied: occupied)
+            }
+            let region = build(index, patch: patch)
+            onRegion?(region)
+            return region
         }
     }
 

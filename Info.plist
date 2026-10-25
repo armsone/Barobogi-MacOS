@@ -2,6 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>BarobogiBuildStamp</key>
+	<string>202610252310</string>
 	<key>CFBundleDisplayName</key>
 	<string>바로보기</string>
 	<key>CFBundleDocumentTypes</key>
@@ -43,9 +45,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.9.2</string>
+	<string>0.9.7</string>
 	<key>CFBundleVersion</key>
-	<string>202610230735</string>
+	<string>202610252331</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.utilities</string>
 	<key>LSMinimumSystemVersion</key>

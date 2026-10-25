@@ -364,6 +364,8 @@
 
   // 부분 번역 결과를 받는 요청별 처리기(요청 키 → 함수). 요청이 끝나면 지운다.
   const partialSinks = new Map();
+  // 이미지 OCR 요청 키 → 완성된 문단(번역과 복원 조각이 준비된 것)을 받는 함수. 요청이 끝나면 지운다.
+  const partialImageSinks = new Map();
   let partialCounter = 0;
 
   function send(message) {
@@ -1804,9 +1806,19 @@
   // 않는 대상 언어에서는 원문의 한자 두 글자 이상이 그대로 옮겨진 것도 남은 원문으로 본다(일부만 번역해 돌려준 경우).
   const KANA_RESIDUE = /[ぁ-ゖゝ-ゟァ-ヺヽ-ヿㇰ-ㇿｦ-ｯｱ-ﾝ]/u;
 
-  function untranslatedResidue(original, translated, target) {
+  // 대상 언어 글자(가나·한자를 뺀 글자)가 남은 가나보다 뚜렷이 많으면, 이름·낱말 몇 개만 가나로 남은 번역이다. 항목 전체를 버리지
+  // 않고 그대로 보여 준다(allowMinorKana). 원문 그대로이거나 대상 언어 글자가 거의 없는 결과는 여전히 남은 원문이다.
+  const KANA_RESIDUE_ALL = new RegExp(KANA_RESIDUE.source, "gu");
+
+  function minorKanaResidue(text) {
+    const kana = (text.match(KANA_RESIDUE_ALL) || []).length;
+    const own = Array.from(text.replace(KANA_RESIDUE_ALL, "")).filter((c) => /\p{L}/u.test(c) && !/\p{Script=Han}/u.test(c)).length;
+    return own >= 3 && own >= kana * 1.5;
+  }
+
+  function untranslatedResidue(original, translated, target, allowMinorKana = false) {
     const text = String(translated || "");
-    if (!/^ja/.test(target) && KANA_RESIDUE.test(text)) return true;
+    if (!/^ja/.test(target) && KANA_RESIDUE.test(text) && !(allowMinorKana && minorKanaResidue(text))) return true;
     if (/^(ja|zh)/.test(target) || typeof original !== "string" || !original) return false;
     return (text.match(/\p{Script=Han}{2,}/gu) || []).some((run) => original.includes(run));
   }
@@ -1815,7 +1827,7 @@
   function markUnresolved(items, renderTarget) {
     const sameText = (text) => String(text || "").normalize("NFKC").replace(/\s+/gu, "").toLocaleLowerCase();
     return items.map((item) => {
-      const unresolved = !item.t || untranslatedResidue(item.o, item.t, renderTarget) ||
+      const unresolved = !item.t || untranslatedResidue(item.o, item.t, renderTarget, true) ||
         (/^ko/.test(renderTarget) && item.o && sameText(item.o) === sameText(item.t) &&
         /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(item.o));
       return unresolved ? { ...item, t: "번역 확인 필요", unresolved: true } : item;
@@ -1827,29 +1839,35 @@
   /** 새 덮개를 끝까지 그리지 못했으면(세대·스크롤·글꼴 변경 등으로 그만둠) 덮개를 모두 지우는 경로(overlayEpoch)가 없었고 그 자리가
    *  비어 있을 때만, 같은 그림·같은 자리 조건(heldStillValid)을 지키는 이전 성공 덮개를 되살린다(원문 그림이 다시 드러나지 않게).
    *  끝까지 그린 새 덮개는 이전 덮개 사본(prior, 메모리에만)을 가진다: 이번 동작이 시간 초과로 끝나면 그 사본으로 되돌린다. */
-  async function renderImage(candidate, items, langs, refineCandidates, cachedPatches) {
+  async function renderImage(candidate, items, langs, refineCandidates, cachedPatches, partial = false, replaces = []) {
     const previous = imageRecords.get(candidate.img);
     const held = previous && previous.held ? previous : null;
     const heldBox = held ? held.box : null;
+    // 일부 문단만 먼저 그린 덮개(partial)는 새 덮개가 다 그려질 때까지 그 아래에 두어 원문 글자가 다시 비치지 않게 한다.
+    // 부분 그리기끼리는 서로 대신하지 않고, 새로 준비된 문단만 같은 덮개에 조각으로 덧붙인다(drawImage).
+    const staleBox = !partial && !held && previous && previous.partial ? previous.box : null;
     const epoch = overlayEpoch;
     // 같은 그림을 다시 그릴 때(글꼴 변경 등)는 앞 덮개가 가진 이전 성공 사본을 이어받는다.
     const prior = held || (previous && previous.prior) || null;
     try {
-      return await drawImage(candidate, items, langs, refineCandidates, cachedPatches, heldBox, prior);
+      return await drawImage(candidate, items, langs, refineCandidates, cachedPatches, heldBox, prior, partial, staleBox, replaces);
     } finally {
       if (heldBox) heldBox.remove();
+      if (staleBox) staleBox.remove();
       const drawn = imageRecords.get(candidate.img);
       if (held && !drawn && epoch === overlayEpoch && state.view === "translated") restoreHeld(candidate.img, held);
     }
   }
 
-  async function drawImage(candidate, items, langs, refineCandidates, cachedPatches, heldBox, prior = null) {
+  async function drawImage(candidate, items, langs, refineCandidates, cachedPatches, heldBox, prior = null, partial = false, staleBox = null, replaces = []) {
     const renderTarget = state.pageEngineOverride ? state.pageEngineOverride.target : state.target;
     if (!cachedPatches) items = markUnresolved(items, renderTarget);
     const { img, rect, clip } = candidate;
     const pageGen = state.pageGen, scrollGen = state.scrollGen, fontStyle = state.fontStyle;
     const previous = imageRecords.get(img);
-    if (previous && previous.box !== heldBox) previous.box.remove();
+    // 부분 그리기는 이미 그려 둔 부분 덮개가 있으면 그 덮개에 방금 준비된 문단만 조각으로 덧붙인다(누적 전체를 다시 그리지 않는다).
+    const extend = partial && previous && previous.partial && previous.box.isConnected ? previous : null;
+    if (previous && !extend && previous.box !== heldBox && previous.box !== staleBox) previous.box.remove();
     const members = candidate.members || [img];
     // 묶이기 전(어느 조각이 아직 불러오던 때) 조각 하나로 그린 덮개는 이 묶음 덮개와 겹치므로 지운다.
     for (const member of members) {
@@ -1857,16 +1875,27 @@
       if (stale) { stale.box.remove(); imageRecords.delete(member); }
     }
     const root = layer();
-    const box = document.createElement("div");
-    box.className = "img";
-    box.style.left = `${clip.x}px`;
-    box.style.top = `${clip.y}px`;
-    box.style.width = `${clip.w}px`;
-    box.style.height = `${clip.h}px`;
-    root.appendChild(box);
+    const frame = extend ? extend.box : document.createElement("div");
+    if (!extend) {
+      frame.className = "img";
+      frame.style.left = `${clip.x}px`;
+      frame.style.top = `${clip.y}px`;
+      frame.style.width = `${clip.w}px`;
+      frame.style.height = `${clip.h}px`;
+      if (staleBox && staleBox.parentNode === root) root.insertBefore(frame, staleBox);
+      else root.appendChild(frame);
+    }
+    // 부분 그리기의 조각 상자는 덮개와 같은 크기로 그 안에 놓고, 원문 가림과 번역 글자가 모두 준비될 때까지 숨겨 둔다.
+    // 숨긴 채로도 배치·크기 맞춤은 잴 수 있고, 마지막에 가림과 글자를 같은 동기 구간에서 함께 드러낸다(가림만 먼저 보이지 않게).
+    const box = partial ? document.createElement("div") : frame;
+    if (partial) {
+      box.style.cssText = `position:absolute;left:0;top:0;width:${clip.w}px;height:${clip.h}px`;
+      frame.appendChild(box);
+    }
+    box.style.visibility = "hidden";
     // 글꼴 로딩 중에도 기존 취소 경로가 이 상자를 제거할 수 있도록 먼저 등록한다.
-    const record = {
-      key: candidate.key, source: sourceKey(members), members, box,
+    const record = extend || {
+      key: candidate.key, source: sourceKey(members), members, box: frame,
       offX: clip.x - rect.left, offY: clip.y - rect.top, w: clip.w, h: clip.h,
       elemW: rect.width, elemH: rect.height,
       langs: langs && typeof langs === "object" ? langs : undefined,
@@ -1875,14 +1904,16 @@
       fx: Array.isArray(candidate.fx) ? candidate.fx : [],
       patches: null,
       done: false, // 끝까지 그렸을 때만 true(번역 서비스를 바꿀 때 재사용 후보가 된다)
+      partial, // 번역이 끝난 문단만 먼저 그린 덮개. 최종 그리기가 대신하며, 완료로 세지도 재사용하지도 않는다.
       // 이 그림에 대신한 이전 성공 덮개(남겨 둔 기록, 메모리에만). 시간 초과 때만 되돌리는 데 쓰고 완료로 확정되면 놓는다.
       prior
     };
-    imageRecords.set(img, record);
+    if (!extend) imageRecords.set(img, record);
     const renderCurrent = () => {
       if (stillCurrent(pageGen) && state.scrollGen === scrollGen && state.fontStyle === fontStyle &&
           imageRecords.get(img) === record && candidateUnchanged(candidate)) return true;
       box.remove();
+      if (frame !== box) frame.remove();
       if (imageRecords.get(img) === record) imageRecords.delete(img);
       return false;
     };
@@ -1895,39 +1926,70 @@
     // 인식한 문단 배경색(item.bg)으로 글자 상자(item.g)와 함께 지운 상자(item.cv)를 불투명하게 가린다(대체 경로,
     // 그림을 되살린 것처럼 꾸미지 않는 단색 가림). 반투명은 쓰지 않는다(원문이 비치므로).
     // 캔버스는 기기 픽셀 해상도로 만들어 Retina에서 조각 가장자리가 흐려져 원문 테두리가 비치지 않게 한다.
+    // 가림은 번역 글자가 실제로 그려질 항목만 그리고(아래 shown), 글자 배치가 끝난 뒤에 만든다: 번역이 없거나 그리지 못한
+    // 항목은 원문을 지우지 않아 말풍선이 빈 채로 남지 않는다.
     const dpr = Math.max(1, Math.min(4, Number(window.devicePixelRatio) || 1));
-    const maskCanvas = document.createElement("canvas");
-    maskCanvas.className = "mask";
-    maskCanvas.width = Math.max(1, Math.round(clip.w * dpr));
-    maskCanvas.height = Math.max(1, Math.round(clip.h * dpr));
-    const maskCtx = maskCanvas.getContext("2d");
     const patches = cachedPatches ||
       (typeof createImageBitmap === "function" ? await Promise.all(items.map((item) => decodePatch(item.m))) : items.map(() => null));
-    record.patches = patches;
+    if (!partial) record.patches = patches;
     if (!renderCurrent()) return;
+    // 번짐·압축 잡음까지 가리도록 글자 크기의 8%(최소 1.5px)만큼 넓혀 채운다.
+    const maskBoxes = (item) => {
+      const glyphs = (Array.isArray(item.g) ? item.g : []).concat(Array.isArray(item.cv) ? item.cv : []);
+      return glyphs.length ? glyphs : [[item.x, item.y, item.w, item.h]];
+    };
+    const maskPad = (boxes) => {
+      const sizes = boxes.map((g) => Math.max(g[2] * clip.w, g[3] * clip.h)).sort((a, b) => a - b);
+      return Math.max(1.5, (sizes[Math.floor(sizes.length / 2)] || 0) * 0.08);
+    };
+    // 부분 그리기는 방금 준비된 문단이 놓인 자리만 캔버스로 만든다(그림 전체를 매번 다시 인코딩·디코딩하지 않는다).
+    const maskRect = (() => {
+      const full = { x: 0, y: 0, w: clip.w, h: clip.h };
+      if (!partial) return full;
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      const grow = (g, pad) => {
+        if (!Array.isArray(g) || g.length < 4 || !g.every(Number.isFinite) || g[2] <= 0 || g[3] <= 0) return;
+        x0 = Math.min(x0, g[0] * clip.w - pad); y0 = Math.min(y0, g[1] * clip.h - pad);
+        x1 = Math.max(x1, (g[0] + g[2]) * clip.w + pad); y1 = Math.max(y1, (g[1] + g[3]) * clip.h + pad);
+      };
+      for (const item of items) {
+        const boxes = maskBoxes(item);
+        const pad = maskPad(boxes.filter((g) => Array.isArray(g) && g.length >= 4 && g.every(Number.isFinite)));
+        boxes.forEach((g) => grow(g, pad));
+        if (item.m && typeof item.m === "object") grow([item.m.x, item.m.y, item.m.w, item.m.h], 2);
+      }
+      if (!(x1 > x0 && y1 > y0)) return full;
+      const left = Math.max(0, Math.floor(x0) - 2), top = Math.max(0, Math.floor(y0) - 2);
+      return { x: left, y: top, w: Math.min(clip.w, Math.ceil(x1) + 2) - left, h: Math.min(clip.h, Math.ceil(y1) + 2) - top };
+    })();
+    const maskCanvas = document.createElement("canvas");
+    maskCanvas.className = "mask";
+    maskCanvas.width = Math.max(1, Math.round(maskRect.w * dpr));
+    maskCanvas.height = Math.max(1, Math.round(maskRect.h * dpr));
+    const maskCtx = maskCanvas.getContext("2d");
     const restored = items.map((_, i) => Boolean(maskCtx && patches[i]));
-    if (maskCtx) {
-      maskCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    // shown[i]: 번역 글자를 실제로 그린 항목(배치가 끝난 뒤 정해진다). 원문 가림은 이 항목만 그린다.
+    const shown = items.map(() => false);
+    // 글자 배치가 끝난 뒤 원문 가림을 그려 돌려준다(가릴 항목이 없으면 null). 반환한 요소는 글자 배치 직전에 붙인다.
+    async function buildMask() {
+      if (!maskCtx || !shown.some(Boolean)) return null;
+      maskCtx.setTransform(dpr, 0, 0, dpr, -maskRect.x * dpr, -maskRect.y * dpr);
       for (let i = 0; i < items.length; i += 1) {
+        if (!shown[i] || restored[i]) continue;
         // 복원 조각의 투명 부분이나 놓친 획에서도 원문이 비치지 않도록 글자 자리를 먼저 가린다.
         // 인식 상자 밖을 짐작으로 넓혀 그림 위에 큰 단색 상자를 덮지 않는다. 놓친 장식 글자는 네이티브가
         // 실제 검출(문서 인식 + 레거시 줄 검출 보충)로 상자를 찾아 보낸다.
         const item = items[i];
-        const color = typeof item.bg === "string" && /^#[0-9A-Fa-f]{6}$/.test(item.bg) ? item.bg : "#FFFFFF";
-        const glyphs = (Array.isArray(item.g) ? item.g : []).concat(Array.isArray(item.cv) ? item.cv : []);
-        const boxes = glyphs.length ? glyphs : [[item.x, item.y, item.w, item.h]];
-        const sizes = boxes.map((g) => Math.max(g[2] * clip.w, g[3] * clip.h)).sort((a, b) => a - b);
-        // 번짐·압축 잡음까지 가리도록 글자 크기의 8%(최소 1.5px)만큼 넓혀 채운다.
-        const pad = Math.max(1.5, (sizes[Math.floor(sizes.length / 2)] || 0) * 0.08);
-        maskCtx.fillStyle = color;
-        if (restored[i]) continue;
+        const boxes = maskBoxes(item);
+        const pad = maskPad(boxes);
+        maskCtx.fillStyle = typeof item.bg === "string" && /^#[0-9A-Fa-f]{6}$/.test(item.bg) ? item.bg : "#FFFFFF";
         for (const g of boxes) {
           if (!g.every(Number.isFinite) || g[2] <= 0 || g[3] <= 0) continue;
           maskCtx.fillRect(g[0] * clip.w - pad, g[1] * clip.h - pad, g[2] * clip.w + pad * 2, g[3] * clip.h + pad * 2);
         }
       }
       for (let i = 0; i < items.length; i += 1) {
-        if (!restored[i]) continue;
+        if (!shown[i] || !restored[i]) continue;
         const m = items[i].m;
         maskCtx.drawImage(patches[i], m.x * clip.w, m.y * clip.h, m.w * clip.w, m.h * clip.h);
       }
@@ -1938,9 +2000,13 @@
       maskImage.src = maskCanvas.toDataURL("image/png");
       let displayMask = maskImage;
       try { await maskImage.decode(); } catch { displayMask = maskCanvas; }
-      if (!renderCurrent()) return;
-      box.appendChild(displayMask);
-      if (heldBox) heldBox.remove();
+      if (partial) {
+        displayMask.style.left = `${maskRect.x}px`;
+        displayMask.style.top = `${maskRect.y}px`;
+        displayMask.style.width = `${maskRect.w}px`;
+        displayMask.style.height = `${maskRect.h}px`;
+      }
+      return displayMask;
     }
 
     // 원본 글자 하나하나의 실제 잉크 상자(item.g, 네이티브가 실제 잉크로 좁힌 상자) 중앙값으로 원본 글자 크기를
@@ -2287,7 +2353,7 @@
       place(div, unit.area);
       div.style.color = contrastColor(item.bg);
       // 캔버스 2D 컨텍스트를 못 만든 드문 경우에만 마지막 안전망으로 글자 영역 전체를 배경색으로 불투명하게 덮는다.
-      if (!maskCtx) div.style.background = typeof item.bg === "string" && /^#[0-9A-Fa-f]{6}$/.test(item.bg) ? item.bg : "#FFFFFF";
+      if (!maskCtx && !item.unresolved) div.style.background = typeof item.bg === "string" && /^#[0-9A-Fa-f]{6}$/.test(item.bg) ? item.bg : "#FFFFFF";
       // 원본이 굵은 글씨면 굵게(번들 글꼴은 Regular뿐이라 브라우저 합성 굵기). 테두리는 크기를 맞춘 뒤 아래에서 준다.
       if (groupFw[lead]) div.style.fontWeight = "700";
       const fontStyle = styles[lead];
@@ -2297,8 +2363,8 @@
       // 다듬기가 자기 칸 글자만 바꾸게 한다.
       const text = document.createElement("span");
       text.className = "tt";
-      // 실패한 항목은 원문 자리에 글자를 그리지 않는다(원문 가림만 유지). 상자를 가득 채우는 거대한 안내문
-      // 대신 그림마다 작은 알림 하나(.fail)로 충분히 알린다. 원문은 노출하지 않는다.
+      // 실패한 항목은 번역 글자를 그리지 않고 원문도 지우지 않는다(빈 말풍선을 만들지 않는다). 상자를 가득 채우는 거대한
+      // 안내문 대신 그림마다 작은 알림 하나(.fail)로 알린다.
       if (!item.unresolved) {
         if (unit.members.length === 1) {
           text.textContent = item.t;
@@ -2437,10 +2503,27 @@
       div.dataset.vertical = unit.vertical ? "1" : "0";
     }
 
-    if (renderCurrent()) {
+    // 번역 글자가 실제로 그려진 칸만 원문을 가린다. 번역이 없거나(실패·빈 번역·원문 그대로) 칸이 없어 글자가 보이지 않으면
+    // 그 항목의 원문은 그대로 두고 칸도 치운다.
+    for (const unit of units) {
+      const visible = !unit.members.some((i) => items[i].unresolved) && unit.text.textContent.trim() !== "" &&
+        Number.isFinite(unit.fitted.size) && unit.div.clientWidth >= 2 && unit.div.clientHeight >= 2;
+      if (visible) unit.members.forEach((i) => { shown[i] = true; });
+      else unit.div.remove();
+    }
+    const displayMask = await buildMask();
+    if (!renderCurrent()) return;
+    // 원문 가림과 번역 글자를 같은 동기 구간에서 함께 드러낸다. 새 덮개가 자리를 잡은 뒤에야 이전·남겨 둔 덮개를 치운다.
+    if (displayMask) box.insertBefore(displayMask, box.firstChild);
+    box.style.visibility = "";
+    if (heldBox) heldBox.remove();
+    if (staleBox) staleBox.remove();
+    for (const old of replaces) old.remove();
+    if (!partial) {
       record.done = true;
       if (state.view === "translated") fxBubbles(record);
     }
+    return box;
   }
 
   /** 이미 그려진 이미지 덮개를 재캡처·재번역 없이 다시 그린다(글자색·원문 가림 조각·자리는 그대로, 조각은 다시
@@ -2449,7 +2532,7 @@
     for (const [img, record] of Array.from(imageRecords.entries())) {
       if (imgs && !imgs.has(img)) continue;
       // 남겨 둔(held) 덮개는 새 서비스 번역으로 다시 그릴 때 지금 글꼴을 쓴다(이전 서비스 번역으로 다시 그리지 않는다).
-      if (record.held || !img.isConnected || !Array.isArray(record.items)) continue;
+      if (record.held || record.partial || !img.isConnected || !Array.isArray(record.items)) continue;
       const geometry = recordGeometry(img, record);
       if (!geometry) continue;
       const { rect, rects } = geometry;
@@ -2567,6 +2650,19 @@
     } catch {
       return "";
     }
+  }
+
+  // 최종 응답에서 같은 문단 id가 둘 이상이면 첫 항목만 쓴다(같은 문단을 두 번 그리면 겹침 회피가 한쪽을 옆으로 밀어 문구가 나란히 반복된다).
+  // id가 다른 항목은 문구가 같아도 별개의 문단이므로 모두 남긴다.
+  function uniqueImageItems(items) {
+    if (!Array.isArray(items)) return items;
+    const seen = new Set();
+    return items.filter((item) => {
+      if (!item || typeof item.id !== "string") return true;
+      if (seen.has(item.id)) return false;
+      seen.add(item.id);
+      return true;
+    });
   }
 
   function withoutImageNames(img, items) {
@@ -2772,6 +2868,7 @@
     if (action) action.timing.image = imageTiming;
     // 예외(실패·취소)로 끝나면 남겨 둔 이전 성공 덮개를 여기서 지우지 않는다(runPass·시간 한도 처리가 유효한 것만 남긴다).
     let threw = false;
+    let discardPartial = null;
     try {
       if (reuse.length) {
         if (!(await translateHeldImages(reuse, { pageGen, scrollGen, sx, sy, override, action, inventory, imageTiming, shared }))) return;
@@ -2817,10 +2914,122 @@
       updateInventory(inventory, { phase: "ocr" });
       markStage(action, "ocr");
       const ocrSentAt = performance.now();
-      const response = await send({ cmd: override ? "ocrPageExternal" : "ocr", captureId: capture.captureId, target, engine, viewport, regions,
-                                    pageTitle: String(document.title || "").slice(0, 300),
-                                    ...(shared?.deferred && !shared.deferred.done ? { texts: shared.deferred.texts } : {}),
-                                    ...(override ? { token: override.token } : {}), ...(action ? { action: action.id } : {}) });
+      // Mac 기본 번역만: 번역과 복원 조각이 준비된 문단을 그림별로 모아 프레임 간격으로 묶어 먼저 그린다. 아직 번역되지 않은 문단은
+      // 원문 그대로 두고, 이 덮개는 완료·재사용으로 세지 않는다. 최종 응답이 같은 그림을 다시 그려 대신한다.
+      const partialKey = !override && engine === LOCAL_ENGINE ? `p${++partialCounter}-${Math.random().toString(36).slice(2, 10)}` : null;
+      const partialItems = new Map();
+      const partialPatches = new Map();
+      // index -> 아직 그리지 않은(새로 오거나 바뀐) 문단 id
+      const partialDirty = new Map();
+      // index -> { record, parts: [{ box, ids }] }: 그림마다 이미 덧붙인 조각 상자와 그 안에 든 문단 id
+      const partialDrawn = new Map();
+      let partialWork = null;
+      let partialClosed = false;
+      const partialValid = () => !partialClosed && document.visibilityState === "visible" && stillCurrent(pageGen) &&
+        scrollGen === state.scrollGen && state.pageEngineOverride === override && target === state.target && engine === state.engine &&
+        scrollX === sx && scrollY === sy;
+      const paintPartials = async () => {
+        try {
+          while (partialDirty.size) {
+            // 한 애니메이션 프레임까지만 모은다(rAF가 멈춘 배경 탭에서만 짧은 타이머가 대신한다).
+            await new Promise((resolve) => {
+              const timer = setTimeout(resolve, 80);
+              requestAnimationFrame(() => { clearTimeout(timer); resolve(); });
+            });
+            for (const index of Array.from(partialDirty.keys())) {
+              const dirty = partialDirty.get(index);
+              partialDirty.delete(index);
+              if (!partialValid()) { partialDirty.clear(); return; }
+              const candidate = candidates[index];
+              const existing = imageRecords.get(candidate.img);
+              // 이미 완성된 덮개(남겨 둔 이전 서비스 번역 포함)는 부분 결과로 덮지 않는다.
+              if (!candidateUnchanged(candidate) || (existing && !existing.partial)) continue;
+              const list = partialItems.get(index) || new Map();
+              // 덮개가 사라졌으면(그리기 취소 등) 이미 받은 문단을 모두 다시 그린다.
+              let drawn = partialDrawn.get(index);
+              if (!drawn || !existing || drawn.record !== existing) {
+                // 이 호출이 모르는 부분 덮개가 남아 있으면 치우고 처음부터 다시 그린다(같은 문단이 두 번 보이지 않게).
+                if (existing) { existing.box.remove(); imageRecords.delete(candidate.img); }
+                drawn = { record: null, parts: [] };
+                partialDrawn.set(index, drawn);
+                list.forEach((_, id) => dirty.add(id));
+              }
+              // 이미 그려 둔 조각 안의 문단이 바뀌면 그 조각의 문단을 함께 다시 그려 바꾼다(같은 문단이 두 번 보이지 않게 한다).
+              const replaced = drawn.parts.filter((part) => Array.from(dirty).some((id) => part.ids.has(id)));
+              const wanted = new Set(dirty);
+              replaced.forEach((part) => part.ids.forEach((id) => wanted.add(id)));
+              const snapshot = Array.from(wanted).map((id) => list.get(id)).filter(Boolean);
+              // 문단 id별로 디코딩한 조각을 재사용한다. 같은 문단이 다시 오면(복원 조각이 같으면) 다시 디코딩하지 않고, 바뀌었으면 교체한다.
+              const known = partialPatches.get(index) || new Map();
+              partialPatches.set(index, known);
+              const fresh = snapshot.filter((item) => !known.has(item.id) || known.get(item.id).d !== (item.m && item.m.d));
+              const decoded = typeof createImageBitmap === "function"
+                ? await Promise.all(fresh.map((item) => decodePatch(item.m))) : fresh.map(() => null);
+              fresh.forEach((item, i) => known.set(item.id, { d: item.m && item.m.d, bitmap: decoded[i] }));
+              if (!partialValid()) { partialDirty.clear(); return; }
+              // 번역이 없거나 원문이 남은 문단은 부분 결과로 그리지 않는다(원문이 그대로 보이고, 최종 응답이 정직하게 처리한다).
+              const marked = markUnresolved(snapshot, target);
+              const drawable = marked.map((item, i) => i).filter((i) => !marked[i].unresolved);
+              const part = drawable.length
+                ? await renderImage(candidate, drawable.map((i) => marked[i]), null, null,
+                  drawable.map((i) => known.get(snapshot[i].id).bitmap), true, replaced.map((p) => p.box))
+                : null;
+              if (drawable.length && !part) continue;
+              drawn.record = imageRecords.get(candidate.img) || null;
+              drawn.parts = drawn.parts.filter((p) => !replaced.includes(p));
+              if (!drawable.length) replaced.forEach((p) => p.box.remove());
+              if (part) drawn.parts.push({ box: part, ids: new Set(drawable.map((i) => snapshot[i].id)) });
+            }
+          }
+        } catch { /* 부분 그리기 실패는 최종 그리기가 대신한다 */ } finally {
+          partialWork = null;
+        }
+      };
+      if (partialKey) {
+        partialImageSinks.set(partialKey, (images) => {
+          if (!partialValid()) return;
+          for (const image of images.slice(0, candidates.length)) {
+            const index = Number(String(image && image.k).slice(1));
+            const candidate = candidates[index];
+            if (!candidate || `i${index}` !== image.k || !Array.isArray(image.items)) continue;
+            // 문단 id(번역문과 무관한 인식 식별자)로 갱신한다: 반복·재시도된 같은 문단은 한 항목으로 합치고, 같은 문구의 다른 말풍선은 id가
+            // 달라 그대로 둘 다 남는다. id가 없는 항목은 받은 순서대로 따로 센다.
+            const list = partialItems.get(index) || new Map();
+            let changed = false;
+            const dirty = partialDirty.get(index) || new Set();
+            for (const item of withoutImageNames(candidate.img, image.items)) {
+              const id = typeof item.id === "string" ? item.id : `n${list.size}`;
+              const prior = list.get(id);
+              if (prior && prior.t === item.t && (prior.m && prior.m.d) === (item.m && item.m.d)) continue;
+              list.set(id, { ...item, id });
+              dirty.add(id);
+              changed = true;
+            }
+            partialItems.set(index, list);
+            if (changed) partialDirty.set(index, dirty);
+          }
+          if (partialDirty.size && !partialWork) partialWork = paintPartials();
+        });
+      }
+      discardPartial = () => {
+        for (const candidate of candidates) {
+          const record = imageRecords.get(candidate.img);
+          if (record && record.partial) { record.box.remove(); imageRecords.delete(candidate.img); }
+        }
+      };
+      let response;
+      try {
+        response = await send({ cmd: override ? "ocrPageExternal" : "ocr", captureId: capture.captureId, target, engine, viewport, regions,
+                                pageTitle: String(document.title || "").slice(0, 300),
+                                ...(shared?.deferred && !shared.deferred.done ? { texts: shared.deferred.texts } : {}),
+                                ...(override ? { token: override.token } : {}), ...(action ? { action: action.id } : {}),
+                                ...(partialKey ? { partialKey } : {}) });
+      } finally {
+        // 최종 응답·취소·오류 어느 쪽이든 먼저 받기를 멈추고, 진행 중인 부분 그리기가 끝난 뒤에 이어간다(그리기가 겹치지 않게).
+        partialClosed = true;
+        if (partialKey) partialImageSinks.delete(partialKey);
+        if (partialWork) await partialWork;
+      }
       imageTiming.ocrRoundtrip = Math.round(performance.now() - ocrSentAt);
       imageTiming.native = response.timing || null;
       imageTiming.externalRequest = response.externalRequest || null;
@@ -2845,13 +3054,14 @@
         // 자리·크기가 달라졌으면(같은 엘리먼트를 재사용하거나 옮기는 리더) 방금 받은 글자는 예전 그림 것이므로 버린다.
         if (!candidateUnchanged(candidate)) continue;
         candidate.fx = Array.isArray(image.fx) ? image.fx : [];
-        await renderImage(candidate, withoutImageNames(candidate.img, image.items), image.langs,
+        await renderImage(candidate, uniqueImageItems(withoutImageNames(candidate.img, image.items)), image.langs,
           isExternal() ? null : imageRefineCandidates);
         // 디버그용(제품 UI 아님): 이 캡처의 견본 측정 상태와 검정/회색/흰색 대표값
         const drawn = imageRecords.get(candidate.img);
         const cal = response.calibration;
         if (drawn && cal) drawn.box.dataset.cal = Number.isInteger(cal.w) ? `${cal.s} ${cal.b}/${cal.g}/${cal.w}` : cal.s;
       }
+      discardPartial();
       imageTiming.render = Math.round(performance.now() - renderAt);
       // 이번 패스에서 그린 그림과 이전부터 그대로인 그림을 합쳐 다시 센다(번역 성공 여부와 무관, 인식한 그대로).
       const finalInventory = imageInventory();
@@ -2883,6 +3093,8 @@
       throw error;
     } finally {
       ocrInFlight = false;
+      // 최종 그리기로 대신하지 못한 부분 덮개는 남기지 않는다(완성된 그림으로 오인되지 않게).
+      if (discardPartial) discardPartial();
       // 이번 패스를 끝까지 마쳤는데 새 서비스 번역으로 바꾸지 못한, 화면에 걸친 남은 덮개는 지운다(이전 서비스 번역을 남기지 않는다).
       if (!threw && pageGen === state.pageGen && scrollGen === state.scrollGen) dropHeldImages(true);
     }
@@ -3698,6 +3910,12 @@
         // 배경이 검증해 보낸 부분 결과. 요청 키가 지금 기다리는 요청이 아니면(끝남·취소·다른 페이지) 버린다.
         const sink = typeof message.key === "string" ? partialSinks.get(message.key) : null;
         if (sink && Array.isArray(message.items)) sink(message.items);
+        return false;
+      }
+      case "partialImage": {
+        // 이미지 OCR 요청의 완성된 문단. 요청 키가 지금 기다리는 요청이 아니면 버린다.
+        const sink = typeof message.key === "string" ? partialImageSinks.get(message.key) : null;
+        if (sink && Array.isArray(message.images)) sink(message.images);
         return false;
       }
       case "configure": {

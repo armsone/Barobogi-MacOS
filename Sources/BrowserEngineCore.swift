@@ -94,6 +94,8 @@ struct BrowserProgress: Sendable {
     var counts: [String: Int] = [:]
     /// phase "partial"일 때만: 요청 texts 안 위치와 번역문(끝난 항목만)
     var items: [(index: Int, text: String)] = []
+    /// phase "partial"일 때만: 번역과 복원 조각이 모두 준비된 이미지 문단들(이미지 키별 JSON 배열). 외부 엔진은 쓰지 않는다.
+    var images: Data?
 }
 
 typealias BrowserProgressHandler = @Sendable (BrowserProgress) -> Void
@@ -358,6 +360,74 @@ enum BrowserRequest {
     }
 }
 
+// MARK: - 이미지 부분 번역 버퍼
+
+/// 문단마다 "번역문"과 "복원 조각·글자 상자(그림 단위 분석 결과)"가 모두 준비되는 즉시 한 번씩 내보낸다. 어느 쪽이 먼저 오든
+/// 다른 쪽을 기다리는 것은 그 문단뿐이고, 다른 문단·그림의 분석이나 번역 묶음 전체를 기다리지 않는다.
+/// 같은 번역문이 다시 오면(재시도·같은 문장 반복) 다시 내보내지 않고, 번역문이 바뀐 경우에만 같은 id로 갱신해 내보낸다.
+private final class ImageStreamBuffer: @unchecked Sendable {
+    struct Entry {
+        let index: Int
+        let key: String
+        let dict: [String: Any]
+        let source: String
+    }
+
+    private let lock = NSLock()
+    private var drafts: [Int: String] = [:]
+    private var entries: [Int: [Entry]] = [:]
+    private var sent: [Int: String] = [:]
+    private let deliver: ([(key: String, dict: [String: Any])]) -> Void
+    private let finalText: (String, String) -> String
+
+    init(finalText: @escaping (String, String) -> String, deliver: @escaping ([(key: String, dict: [String: Any])]) -> Void) {
+        self.finalText = finalText
+        self.deliver = deliver
+    }
+
+    func receive(_ items: [(index: Int, text: String)]) {
+        lock.lock()
+        var indexes: [Int] = []
+        for item in items {
+            let draft = item.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !draft.isEmpty else { continue }
+            drafts[item.index] = draft
+            indexes.append(item.index)
+        }
+        let out = collect(indexes)
+        lock.unlock()
+        if !out.isEmpty { deliver(out) }
+    }
+
+    func addReady(_ list: [Entry]) {
+        lock.lock()
+        var indexes: [Int] = []
+        for entry in list {
+            entries[entry.index, default: []].append(entry)
+            indexes.append(entry.index)
+        }
+        let out = collect(indexes)
+        lock.unlock()
+        if !out.isEmpty { deliver(out) }
+    }
+
+    /// lock을 잡은 채 호출한다. 번역문과 준비된 항목이 모두 있고 마지막으로 보낸 번역문과 다른 문단만 고른다.
+    private func collect(_ indexes: [Int]) -> [(key: String, dict: [String: Any])] {
+        var out: [(key: String, dict: [String: Any])] = []
+        var seen = Set<Int>()
+        for index in indexes where seen.insert(index).inserted {
+            guard let draft = drafts[index], let list = entries[index], sent[index] != draft else { continue }
+            sent[index] = draft
+            for entry in list {
+                var dict = entry.dict
+                dict["t"] = finalText(entry.source, draft)
+                out.append((entry.key, dict))
+            }
+        }
+        return out
+    }
+}
+
 // MARK: - 엔진
 
 actor BrowserEngine {
@@ -445,6 +515,7 @@ actor BrowserEngine {
                     var frame: [String: Any] = ["type": "progress", "id": id, "phase": update.phase, "counts": update.counts]
                     if let step = update.step { frame["step"] = step }
                     if !update.items.isEmpty { frame["items"] = update.items.map { ["i": $0.index, "t": $0.text] as [String: Any] } }
+                    if let images = update.images, let object = try? JSONSerialization.jsonObject(with: images) { frame["images"] = object }
                     // 부분 프레임이 한 프레임 상한을 넘으면 건너뛴다(최종 응답이 전부를 담는다).
                     if let data = try? JSONSerialization.data(withJSONObject: frame), data.count <= BrowserBridge.maxOutgoingFrame { emit(data) }
                 }
@@ -523,7 +594,8 @@ actor BrowserEngine {
     /// progress: Mac 기본 번역은 시작할 때 보낼 조각 수를, 웹 번역 엔진은 언어 묶음마다 전체·이미 보낸 항목 수와 글자 수에
     /// 묶음별 진행(BrowserExternalTranslating)을 더해 알린다. 개수만 담는다.
     private func translateTexts(_ texts: [String], target: AppLanguage, engine: String,
-                                progress: BrowserProgressHandler? = nil) async throws -> ([String?], [String], [String?], String?) {
+                                progress: BrowserProgressHandler? = nil,
+                                repairResidue: Bool = false) async throws -> ([String?], [String], [String?], String?) {
         let isExternal = engine != BrowserRequest.localEngine
         if isExternal {
             guard let external, external.engineIDs.contains(engine) else { throw BrowserEngineError.externalUnavailable }
@@ -578,7 +650,7 @@ actor BrowserEngine {
                 let chunk = Array(indices[start..<min(start + Self.batchSize, indices.count)])
                 start += Self.batchSize
                 do {
-                    let output: [String?]
+                    var output: [String?]
                     if isExternal, let external {
                         let done = doneItems
                         let relay: BrowserProgressHandler? = progress.map { progress in
@@ -613,6 +685,13 @@ actor BrowserEngine {
                             try await translator.translate(batchTexts, source: key, target: target.rawValue, partial: partial)
                         }
                         diagnosticBatch += 1
+                        // 일본어가 아닌 대상 언어인데 번역이 비었거나 가나가 남아 돌아온 항목만, 같은 세션으로 문장·구 조각을 나눠 한 번 더 번역한다.
+                        // 이미지 글자 번역(recognizeAndTranslate의 초기 후보 호출)에서만 켠다. 일반 웹 글자 경로는 그대로다.
+                        if repairResidue, !LanguageDetection.isSameLanguage(target.rawValue, "ja") {
+                            output = try await repairingResidue(output, sources: batchTexts, key: key, target: target, partial: partial,
+                                                                context: OnboardDiagnostics.Context(requestID: diagnosticRequestID, batch: max(0, diagnosticBatch - 1),
+                                                                                                    batches: diagnosticBatches))
+                        }
                     }
                     for (offset, index) in chunk.enumerated() where offset < output.count {
                         results[index] = engine == BrowserRequest.localEngine && target == .korean
@@ -647,6 +726,65 @@ actor BrowserEngine {
             if let pair = missing.first, missing.count == order.count { throw BrowserEngineError.languageNotInstalled(pair) }
         }
         return (results, missing, langs, warning)
+    }
+
+    /// 번역 한 번에 항목 전체가 비거나 원문 가나가 남아 돌아오면 그 항목은 통째로 쓸 수 없게 된다(확장은 원문을 그대로 두고 번역 확인 필요로 본다).
+    /// 그런 항목만 골라(묶음당 최대 maxResidueRepairs개) 같은 세션으로 문장 단위, 그래도 가나가 남으면 구(띄어쓰기) 단위로 나눠
+    /// 각각 한 번씩만 다시 번역한다. 가나가 줄어든 결과만 채택하고, 실패·취소가 아닌 오류는 처음 결과를 그대로 둔다. 반복 재시도는 없다.
+    private static let maxResidueRepairs = 12
+
+    private func repairingResidue(_ output: [String?], sources: [String], key: String, target: AppLanguage,
+                                  partial: BrowserPartialHandler?, context: OnboardDiagnostics.Context) async throws -> [String?] {
+        var current = output
+        var pending: [Int] = []
+        for (offset, source) in sources.enumerated() where offset < output.count {
+            if target == .korean, BrowserMenuTranslation.korean(source) != nil { continue }
+            let draft = (output[offset] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if draft.isEmpty || BrowserResidueRepair.kanaCount(draft) > 0 { pending.append(offset) }
+            if pending.count >= Self.maxResidueRepairs { break }
+        }
+        for granularity in [BrowserResidueRepair.Granularity.sentence, .phrase] {
+            var plan: [(offset: Int, segments: [String])] = []
+            for offset in pending {
+                let segments = BrowserResidueRepair.segments(sources[offset], granularity)
+                if segments.count >= 2 { plan.append((offset, segments)) }
+            }
+            guard !plan.isEmpty else { continue }
+            try Task.checkCancellation()
+            let flat = plan.flatMap(\.segments)
+            let translated: [String?]
+            do {
+                translated = try await OnboardDiagnostics.$context.withValue(context) {
+                    try await translator.translate(flat, source: key, target: target.rawValue, partial: nil)
+                }
+            } catch {
+                if error is CancellationError || Task.isCancelled { throw CancellationError() }
+                break
+            }
+            var cursor = 0
+            for entry in plan {
+                defer { cursor += entry.segments.count }
+                var pieces: [String] = []
+                var improvedAny = false
+                for (k, segment) in entry.segments.enumerated() {
+                    let text = cursor + k < translated.count
+                        ? (translated[cursor + k] ?? "").trimmingCharacters(in: .whitespacesAndNewlines) : ""
+                    if !text.isEmpty && text != segment { improvedAny = true }
+                    pieces.append(text.isEmpty ? segment : text)
+                }
+                let joined = pieces.joined(separator: " ")
+                let draft = (current[entry.offset] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                let baseline = draft.isEmpty ? BrowserResidueRepair.kanaCount(sources[entry.offset]) : BrowserResidueRepair.kanaCount(draft)
+                guard improvedAny, BrowserResidueRepair.kanaCount(joined) < baseline else { continue }
+                current[entry.offset] = joined
+                partial?([(entry.offset, joined)])
+            }
+            pending = pending.filter { offset in
+                let draft = (current[offset] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                return draft.isEmpty || BrowserResidueRepair.kanaCount(draft) > 0
+            }
+        }
+        return current
     }
 
     private func isSupported(_ key: String) -> Bool {
@@ -836,25 +974,47 @@ actor BrowserEngine {
         let overlap = engine == BrowserRequest.localEngine && !candidateTexts.isEmpty
         var translateStart = clock.now
         let earlyTexts = candidateTexts
-        async let early: ([String?], [String], [String?], String?)? = overlap
-            ? try await translateTexts(earlyTexts, target: target, engine: engine, progress: progress) : nil
-
-        // 3) 원본 글자 픽셀 분석·배경 복원 조각(영역마다 동시에, 액터 밖에서).
-        let analyzeStart = clock.now
-        let analyzed: [[OCRRegion]] = await withTaskGroup(of: (Int, [OCRRegion]).self) { group in
-            for (index, crop) in crops.enumerated() {
-                // 모든 문단을 재되(후리가나 판정·다른 글자 자리 제외에 필요), 복원 조각은 번역 후보만 만든다.
-                let picture = crop.image, recognized = crop.regions, restore = candidateIDs
-                group.addTask { (index, ImageTextRecognizer.analyzed(recognized, image: picture, restoration: true, restoreIDs: restore)) }
+        // 번역이 분석보다 먼저 끝난 문단은 그 문단의 복원 조각이 준비되는 즉시(그림 단위로) 내보낸다. 다른 그림·번역 묶음을 기다리지 않는다.
+        let streamBuffer: ImageStreamBuffer? = overlap ? progress.map { progress in
+            ImageStreamBuffer(
+                finalText: { source, draft in target == .korean ? BrowserImagePhraseTranslation.korean(source, draft: draft) : draft },
+                deliver: { items in
+                    var frame: [(key: String, dict: [String: Any])] = []
+                    var frameCost = 0
+                    func flush() {
+                        guard !frame.isEmpty else { return }
+                        var byKey: [String: [[String: Any]]] = [:]
+                        var order: [String] = []
+                        for entry in frame {
+                            if byKey[entry.key] == nil { order.append(entry.key) }
+                            byKey[entry.key, default: []].append(entry.dict)
+                        }
+                        let images = order.map { ["k": $0, "items": byKey[$0] ?? []] as [String: Any] }
+                        if let data = try? JSONSerialization.data(withJSONObject: images) {
+                            progress(BrowserProgress(phase: "partial", images: data))
+                        }
+                        frame.removeAll()
+                        frameCost = 0
+                    }
+                    // 한 프레임이 약 500KB를 넘지 않게 나눈다(프레임 상한은 1MB).
+                    for item in items {
+                        let cost = ((item.dict["m"] as? [String: Any])?["d"] as? String)?.utf8.count ?? 0
+                        if frameCost > 0, frameCost + cost > 500_000 { flush() }
+                        frame.append(item)
+                        frameCost += cost + 8_000
+                    }
+                    flush()
+                })
+        } : nil
+        let earlyProgress: BrowserProgressHandler? = progress.map { progress in
+            { @Sendable update in
+                if update.phase == "partial" { streamBuffer?.receive(update.items) } else { progress(update) }
             }
-            var result = Array(repeating: [OCRRegion](), count: crops.count)
-            for await (index, regions) in group { result[index] = regions }
-            return result
         }
-        timing["analyze"] = { let c = (clock.now - analyzeStart).components
-            return Int(c.seconds) * 1000 + Int(c.attoseconds / 1_000_000_000_000_000) }()
-        try Task.checkCancellation()
+        async let early: ([String?], [String], [String?], String?)? = overlap
+            ? try await translateTexts(earlyTexts, target: target, engine: engine, progress: earlyProgress, repairResidue: true) : nil
 
+        // 3) 원본 글자 픽셀 분석·배경 복원 조각(영역마다 동시에, 액터 밖에서). 영역 하나의 분석이 끝나는 즉시 그 문단들을 내보낼 수 있게 준비한다.
         struct Found {
             let imageKey: String; let id: String; let box: CGRect; let text: String; let bg: String; let fg: String
             /// box와 같은 요청 영역 기준 0...1 좌표로 변환한 원본 글자 상자(마스킹·글꼴 추정용)
@@ -869,8 +1029,11 @@ actor BrowserEngine {
             let typography: GlyphTypography?
             let restorationBox: CGRect?
         }
-        var found: [Found] = []
-        for (crop, recognized) in zip(crops, analyzed) {
+        func rounded(_ value: CGFloat) -> Double { (Double(value) * 10_000).rounded() / 10_000 }
+        func boxes(_ list: [CGRect]) -> [[Double]] { list.map { [rounded($0.minX), rounded($0.minY), rounded($0.width), rounded($0.height)] } }
+        let candidateIDSet = candidateIDs
+        // 영역 하나의 인식·분석 결과를 번역 후보 문단(Found)으로 바꾼다.
+        func foundItems(in crop: Crop, recognized: [OCRRegion]) -> [Found] {
             let region = crop.region, rect = crop.rect
             // 잘라낸 픽셀 좌표 → 뷰포트 CSS 좌표 → 요청 영역 기준 0...1. item.box와 글자 상자 모두 같은 변환을 쓴다.
             func mapRect(_ r: CGRect) -> CGRect {
@@ -881,18 +1044,156 @@ actor BrowserEngine {
                 return CGRect(x: (px - region.x) / region.w, y: (py - region.y) / region.h,
                              width: pw / region.w, height: ph / region.h)
             }
-            for item in recognized where candidateIDs.contains(item.id) {
+            var result: [Found] = []
+            for item in recognized where candidateIDSet.contains(item.id) {
                 if let swatchGuard, item.typography?.restorationBox.map({ swatchGuard.intersects(pixelRect($0, in: rect)) }) ?? false {
                     continue
                 }
-                found.append(Found(imageKey: region.k, id: item.id, box: mapRect(item.box), text: item.text, bg: item.backgroundHex,
-                                   fg: item.typography?.foregroundHex ?? item.foregroundHex,
-                                   glyphBoxes: item.glyphBoxes.map(mapRect), glyphTexts: item.glyphTexts,
-                                   coverBoxes: (item.typography?.coverBoxes ?? item.annotationBoxes).map(mapRect),
-                                   fontStyle: item.fontStyle, typography: item.typography,
-                                   restorationBox: item.typography?.restorationBox.map(mapRect)))
+                result.append(Found(imageKey: region.k, id: item.id, box: mapRect(item.box), text: item.text, bg: item.backgroundHex,
+                                    fg: item.typography?.foregroundHex ?? item.foregroundHex,
+                                    glyphBoxes: item.glyphBoxes.map(mapRect), glyphTexts: item.glyphTexts,
+                                    coverBoxes: (item.typography?.coverBoxes ?? item.annotationBoxes).map(mapRect),
+                                    fontStyle: item.fontStyle, typography: item.typography,
+                                    restorationBox: item.typography?.restorationBox.map(mapRect)))
+            }
+            return result
+        }
+        // 문단 하나의 응답 항목(번역문 "t"는 번역이 끝난 뒤에 채운다). id는 이번 요청 안에서 문단마다 유일한 인식 식별자로,
+        // 번역문과 무관하게 확장이 같은 문단의 반복·재시도 결과를 한 항목으로 합치는 데 쓴다.
+        // 응답 전체(이 recognizeAndTranslate 호출 하나)에서 보내는 글자 상자(g·cv) 총 개수 상한은 glyphBudget으로 이어 센다. 항목별 128개
+        // 상한(ImageTextRecognizer.maxGlyphsPerItem)은 그대로 둔 채, 번역에 성공해 실제로 내보내는 항목만 이
+        // 예산을 소모한다. 전체 응답은 여전히 BrowserBridge.maxOutgoingFrame(1MB)로 보호된다.
+        func responseItem(_ item: Found, glyphBudget: inout Int) -> [String: Any] {
+            var dict: [String: Any] = [
+                "id": String(item.id.prefix(64)),
+                "x": rounded(item.box.minX), "y": rounded(item.box.minY),
+                "w": rounded(item.box.width), "h": rounded(item.box.height),
+                "t": "", "bg": item.bg, "fg": item.fg,
+                // 다듬기 후속 요청에만 쓰는 인식 원문(짧게 자름). Chrome·Whale에서 아이콘·화면 번역과 달리
+                // 이 원문을 저장하거나 기록하지 않고, 같은 패스의 후속 요청 한 번에만 메모리에서 쓴다.
+                "o": String(item.text.prefix(700))
+            ]
+            // 원본 글자 모양으로 추정한 글꼴 갈래("fs"). 미판별이면 생략(확장이 고딕으로 대체).
+            if let fontStyle = item.fontStyle { dict["fs"] = fontStyle }
+            // 원본이 굵은 글씨("fw": 700)·테두리 글씨("oc": 테두리색)일 때만 보낸다. "fg"는 위에서 실측 글자색으로 바뀌어 있다.
+            if item.typography?.bold == true { dict["fw"] = 700 }
+            if let outline = item.typography?.outlineHex { dict["oc"] = outline }
+            // 원본 글자 상자([x,y,w,h] 배열의 배열). 글자 크기 산정과, 복원 조각을 못 쓸 때의 대체 가림에 쓴다.
+            if !item.glyphBoxes.isEmpty && item.glyphBoxes.count <= glyphBudget {
+                dict["g"] = boxes(item.glyphBoxes)
+                glyphBudget -= item.glyphBoxes.count
+                // "g"와 같은 순서의 본문 글자 표시("1": 글자·숫자, "0": 구두점·기호). 확장은 글자 크기를 "1"만으로 잰다.
+                if item.glyphTexts.count == item.glyphBoxes.count {
+                    dict["gl"] = String(item.glyphTexts.map { $0.contains { $0.isLetter || $0.isNumber } ? "1" : "0" })
+                }
+            }
+            // "g" 밖에서 함께 지운 상자(후리가나·위치를 못 잡은 글자의 문단 영역). 대체 가림에만 쓴다.
+            if !item.coverBoxes.isEmpty && item.coverBoxes.count <= glyphBudget {
+                dict["cv"] = boxes(item.coverBoxes)
+                glyphBudget -= item.coverBoxes.count
+            }
+            if let uncovered = item.typography?.uncoveredGlyphs, uncovered > 0 { dict["uc"] = uncovered }
+            return dict
+        }
+        let patchPrefix = "data:image/png;base64,"
+        // 부분 전송용 항목: 복원 조각을 항목당 약 400KB 안에서 바로 싣는다(최종 응답이 전체 예산으로 다시 정한다).
+        func readyEntries(_ items: [Found]) -> [ImageStreamBuffer.Entry] {
+            var budget = Self.maxOutgoingGlyphBoxes
+            return items.compactMap { item -> ImageStreamBuffer.Entry? in
+                guard let k = candidateIndex[item.id] else { return nil }
+                var dict = responseItem(item, glyphBudget: &budget)
+                if let original = item.typography?.restorationPNG, let patch = item.restorationBox {
+                    let limit = 400_000
+                    var png: Data? = original
+                    if patchPrefix.count + (original.count + 2) / 3 * 4 > limit {
+                        png = Self.downscaledPatch(original, maxBytes: max(0, limit - patchPrefix.count) / 4 * 3)
+                    }
+                    if let png {
+                        dict["m"] = ["x": rounded(patch.minX), "y": rounded(patch.minY), "w": rounded(patch.width),
+                                     "h": rounded(patch.height), "d": patchPrefix + png.base64EncodedString()]
+                    }
+                }
+                return ImageStreamBuffer.Entry(index: k, key: item.imageKey, dict: dict, source: item.text)
             }
         }
+        let analyzeStart = clock.now
+        var foundByCrop = Array(repeating: [Found](), count: crops.count)
+        // 분석은 영역마다 동시에 돌고, 문단(말풍선 단위로 묶인 인식 항목) 하나의 분석이 끝나는 즉시 이벤트로 넘어온다. 이 반복문이
+        // 그 문단을 바로 내보내므로 같은 그림의 다른 문단이나 다른 그림의 분석이 끝나기를 기다리지 않는다.
+        enum AnalysisEvent: Sendable { case region(Int, OCRRegion); case finished(Int, [OCRRegion]) }
+        let (events, eventSink) = AsyncStream<AnalysisEvent>.makeStream()
+        _ = await withTaskGroup(of: Void.self) { group in
+            for (index, crop) in crops.enumerated() {
+                // 모든 문단을 재되(후리가나 판정·다른 글자 자리 제외에 필요), 복원 조각은 번역 후보만 만든다.
+                let picture = crop.image, recognized = crop.regions, restore = candidateIDSet
+                group.addTask {
+                    let analyzed = ImageTextRecognizer.analyzed(recognized, image: picture, restoration: true, restoreIDs: restore,
+                                                                onRegion: { eventSink.yield(.region(index, $0)) })
+                    eventSink.yield(.finished(index, analyzed))
+                }
+            }
+            var pending = crops.count
+            var delivered = Set<String>()
+            if pending == 0 { eventSink.finish() }
+            for await event in events {
+                switch event {
+                case .region(let index, let region):
+                    // 이미 번역된 문단은 지금 바로 나가고, 아직 번역 중인 문단은 번역이 끝나는 즉시 나간다.
+                    let items = foundItems(in: crops[index], recognized: [region])
+                    delivered.insert("\(index):\(region.id)")
+                    streamBuffer?.addReady(readyEntries(items))
+                case .finished(let index, let regions):
+                    let items = foundItems(in: crops[index], recognized: regions)
+                    foundByCrop[index] = items
+                    // 문단 단위 알림 없이 끝난 영역(분석 불가 등)의 문단은 여기서 한꺼번에 내보낸다.
+                    streamBuffer?.addReady(readyEntries(items.filter { delivered.insert("\(index):\($0.id)").inserted }))
+                    pending -= 1
+                    if pending == 0 { eventSink.finish() }
+                }
+            }
+        }
+        timing["analyze"] = { let c = (clock.now - analyzeStart).components
+            return Int(c.seconds) * 1000 + Int(c.attoseconds / 1_000_000_000_000_000) }()
+        try Task.checkCancellation()
+
+        let found: [Found] = foundByCrop.flatMap { $0 }
+        var glyphBudget = Self.maxOutgoingGlyphBoxes
+        var drawn: [(key: String, dict: [String: Any], item: Found)] = []
+        // 번역문("t")은 번역이 끝난 뒤에 채운다(문단별 부분 전송과 최종 응답이 같은 항목을 쓴다).
+        for item in found {
+            drawn.append((item.imageKey, responseItem(item, glyphBudget: &glyphBudget), item))
+        }
+        // 원문을 덮는 PNG 조각("m"). 조각을 뺀 응답 크기를 먼저 재고 남은 프레임 여유(1MB 상한)만큼만 싣는다.
+        // 싣지 못한 항목은 확장이 g·cv 상자를 문단 배경색으로 불투명하게 가린다(원문이 비치지 않게).
+        // 번역문은 아직 비어 있으므로 원문 길이 기준으로 글자당 3바이트씩 미리 떼어 둔다.
+        var restorationBudget = Self.maxOutgoingRestorationCharacters
+        if let base = try? JSONSerialization.data(withJSONObject: drawn.map(\.dict)) {
+            let translationReserve = found.reduce(0) { $0 + 3 * min($1.text.count * 2 + 16, 1_500) }
+            restorationBudget = max(0, min(BrowserBridge.maxOutgoingFrame - base.count - translationReserve - 32_000,
+                                           Self.maxOutgoingRestorationCharacters))
+        }
+        // 앞에서부터 들어가는 대로 싣던 방식은 큰 제목 조각 몇 개가 여유를 다 쓰거나, 남은 여유보다 큰 조각을 통째로 빼
+        // 그 항목이 글자 상자 단색 가림(큰 평면 상자)으로 떨어졌다. 작은 조각부터 남은 여유를 남은 개수로 나눈 몫 안에서
+        // 원래 해상도로 싣고, 몫보다 큰 조각은 해상도만 낮춰(지운 픽셀은 불투명 유지) 싣는다.
+        let prefix = patchPrefix
+        let patched = drawn.indices.compactMap { index -> (Int, Data, CGRect)? in
+            guard let png = drawn[index].item.typography?.restorationPNG, let patch = drawn[index].item.restorationBox else { return nil }
+            return (index, png, patch)
+        }.sorted { $0.1.count < $1.1.count }
+        for (k, (index, original, patch)) in patched.enumerated() {
+            let share = restorationBudget / (patched.count - k)
+            var png = original
+            if prefix.count + (png.count + 2) / 3 * 4 > share,
+               let smaller = Self.downscaledPatch(png, maxBytes: max(0, share - prefix.count) / 4 * 3) {
+                png = smaller
+            }
+            let encoded = prefix + png.base64EncodedString()
+            guard encoded.count <= restorationBudget else { continue }
+            drawn[index].dict["m"] = ["x": rounded(patch.minX), "y": rounded(patch.minY), "w": rounded(patch.width),
+                                      "h": rounded(patch.height), "d": encoded]
+            restorationBudget -= encoded.count
+        }
+
 
         // 4) 번역 결과 모으기
         var companionResults = [String?](repeating: nil, count: companionTexts.count)
@@ -933,75 +1234,14 @@ actor BrowserEngine {
             return Int(c.seconds) * 1000 + Int(c.attoseconds / 1_000_000_000_000_000) }()
         mark = clock.now
 
-        func rounded(_ value: CGFloat) -> Double { (Double(value) * 10_000).rounded() / 10_000 }
-        func boxes(_ list: [CGRect]) -> [[Double]] { list.map { [rounded($0.minX), rounded($0.minY), rounded($0.width), rounded($0.height)] } }
-        var itemsByKey: [String: [[String: Any]]] = [:]
-        // 응답 전체(이 recognizeAndTranslate 호출 하나)에서 보내는 글자 상자(g·cv) 총 개수 상한. 항목별 128개
-        // 상한(ImageTextRecognizer.maxGlyphsPerItem)은 그대로 둔 채, 번역에 성공해 실제로 내보내는 항목만 이
-        // 예산을 소모한다. 전체 응답은 여전히 BrowserBridge.maxOutgoingFrame(1MB)로 보호된다.
-        var glyphBudget = Self.maxOutgoingGlyphBoxes
-        var drawn: [(key: String, dict: [String: Any], item: Found)] = []
-        for (item, text) in zip(found, translated) {
+        for (index, text) in zip(found.indices, translated) {
             let draft = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let text = engine == BrowserRequest.localEngine && target == .korean && !draft.isEmpty
-                ? BrowserImagePhraseTranslation.korean(item.text, draft: draft) : draft
-            var dict: [String: Any] = [
-                "x": rounded(item.box.minX), "y": rounded(item.box.minY),
-                "w": rounded(item.box.width), "h": rounded(item.box.height),
-                "t": text, "bg": item.bg, "fg": item.fg,
-                // 다듬기 후속 요청에만 쓰는 인식 원문(짧게 자름). Chrome·Whale에서 아이콘·화면 번역과 달리
-                // 이 원문을 저장하거나 기록하지 않고, 같은 패스의 후속 요청 한 번에만 메모리에서 쓴다.
-                "o": String(item.text.prefix(700))
-            ]
-            // 원본 글자 모양으로 추정한 글꼴 갈래("fs"). 미판별이면 생략(확장이 고딕으로 대체).
-            if let fontStyle = item.fontStyle { dict["fs"] = fontStyle }
-            // 원본이 굵은 글씨("fw": 700)·테두리 글씨("oc": 테두리색)일 때만 보낸다. "fg"는 위에서 실측 글자색으로 바뀌어 있다.
-            if item.typography?.bold == true { dict["fw"] = 700 }
-            if let outline = item.typography?.outlineHex { dict["oc"] = outline }
-            // 원본 글자 상자([x,y,w,h] 배열의 배열). 글자 크기 산정과, 복원 조각을 못 쓸 때의 대체 가림에 쓴다.
-            if !item.glyphBoxes.isEmpty && item.glyphBoxes.count <= glyphBudget {
-                dict["g"] = boxes(item.glyphBoxes)
-                glyphBudget -= item.glyphBoxes.count
-                // "g"와 같은 순서의 본문 글자 표시("1": 글자·숫자, "0": 구두점·기호). 확장은 글자 크기를 "1"만으로 잰다.
-                if item.glyphTexts.count == item.glyphBoxes.count {
-                    dict["gl"] = String(item.glyphTexts.map { $0.contains { $0.isLetter || $0.isNumber } ? "1" : "0" })
-                }
-            }
-            // "g" 밖에서 함께 지운 상자(후리가나·위치를 못 잡은 글자의 문단 영역). 대체 가림에만 쓴다.
-            if !item.coverBoxes.isEmpty && item.coverBoxes.count <= glyphBudget {
-                dict["cv"] = boxes(item.coverBoxes)
-                glyphBudget -= item.coverBoxes.count
-            }
-            if let uncovered = item.typography?.uncoveredGlyphs, uncovered > 0 { dict["uc"] = uncovered }
-            drawn.append((item.imageKey, dict, item))
+            let finalText = engine == BrowserRequest.localEngine && target == .korean && !draft.isEmpty
+                ? BrowserImagePhraseTranslation.korean(found[index].text, draft: draft) : draft
+            drawn[index].dict["t"] = finalText
         }
-        // 원문을 덮는 PNG 조각("m"). 조각을 뺀 응답 크기를 먼저 재고 남은 프레임 여유(1MB 상한)만큼만 싣는다.
-        // 싣지 못한 항목은 확장이 g·cv 상자를 문단 배경색으로 불투명하게 가린다(원문이 비치지 않게).
-        var restorationBudget = Self.maxOutgoingRestorationCharacters
-        if let base = try? JSONSerialization.data(withJSONObject: drawn.map(\.dict)) {
-            restorationBudget = max(0, min(BrowserBridge.maxOutgoingFrame - base.count - 32_000, Self.maxOutgoingRestorationCharacters))
-        }
-        // 앞에서부터 들어가는 대로 싣던 방식은 큰 제목 조각 몇 개가 여유를 다 쓰거나, 남은 여유보다 큰 조각을 통째로 빼
-        // 그 항목이 글자 상자 단색 가림(큰 평면 상자)으로 떨어졌다. 작은 조각부터 남은 여유를 남은 개수로 나눈 몫 안에서
-        // 원래 해상도로 싣고, 몫보다 큰 조각은 해상도만 낮춰(지운 픽셀은 불투명 유지) 싣는다.
-        let prefix = "data:image/png;base64,"
-        let patched = drawn.indices.compactMap { index -> (Int, Data, CGRect)? in
-            guard let png = drawn[index].item.typography?.restorationPNG, let patch = drawn[index].item.restorationBox else { return nil }
-            return (index, png, patch)
-        }.sorted { $0.1.count < $1.1.count }
-        for (k, (index, original, patch)) in patched.enumerated() {
-            let share = restorationBudget / (patched.count - k)
-            var png = original
-            if prefix.count + (png.count + 2) / 3 * 4 > share,
-               let smaller = Self.downscaledPatch(png, maxBytes: max(0, share - prefix.count) / 4 * 3) {
-                png = smaller
-            }
-            let encoded = prefix + png.base64EncodedString()
-            guard encoded.count <= restorationBudget else { continue }
-            drawn[index].dict["m"] = ["x": rounded(patch.minX), "y": rounded(patch.minY), "w": rounded(patch.width),
-                                      "h": rounded(patch.height), "d": encoded]
-            restorationBudget -= encoded.count
-        }
+        var itemsByKey: [String: [[String: Any]]] = [:]
+        for entry in drawn { itemsByKey[entry.key, default: []].append(entry.dict) }
         // 원화 환산 후보: 번역 조각이 없는 줄(숫자·통화 기호만 있어 번역 대상이 아닌 가격 줄 등)의 위치·인식 원문·글자 상자만 따로 보낸다.
         // 확장은 이 줄에서 외국 금액을 찾아 금액 바로 아래에 말풍선을 놓는다(번역문·가림 조각은 없고 원본 그림은 그대로).
         // 글자 상자는 인식 원문의 공백 아닌 글자와 개수까지 맞을 때만 싣는다(맞지 않으면 확장이 줄 상자 비율로 대신한다).
@@ -1031,7 +1271,6 @@ actor BrowserEngine {
                 fxByKey[region.k, default: []].append(dict)
             }
         }
-        for entry in drawn { itemsByKey[entry.key, default: []].append(entry.dict) }
         // 번역 성공 여부와 무관하게(건너뛴 조각 포함) 이미지마다 인식한 언어 개수를 센다.
         var langCountsByKey: [String: [String: Int]] = [:]
         for (item, lang) in zip(found, langs) {
@@ -1238,6 +1477,57 @@ enum BrowserMenuTranslation {
     }
 }
 
+/// 번역문에 원문 가나가 남았는지 세고, 그런 항목을 다시 번역할 때 원문을 문장·구 조각으로 나눈다(원문 내용은 기록하지 않는다).
+enum BrowserResidueRepair {
+    enum Granularity { case sentence, phrase }
+
+    /// 확장 content.js의 KANA_RESIDUE와 같은 범위(장음 부호·가운뎃점 제외).
+    static func isKana(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x3041...0x3096, 0x309D...0x309F, 0x30A1...0x30FA, 0x30FD...0x30FF, 0x31F0...0x31FF, 0xFF66...0xFF6F, 0xFF71...0xFF9D: return true
+        default: return false
+        }
+    }
+
+    static func kanaCount(_ text: String) -> Int { text.unicodeScalars.reduce(0) { $0 + (isKana($1) ? 1 : 0) } }
+
+    /// sentence: 문장 끝 부호 뒤에서, phrase: 공백·줄바꿈에서 자른다. 글자가 없는 조각은 앞 조각에 붙인다.
+    static func segments(_ source: String, _ granularity: Granularity) -> [String] {
+        var raw: [String] = []
+        var buffer = ""
+        var pendingBreak = false
+        for character in source {
+            let isTerminator = "。．.！!？?…‥".contains(character)
+            switch granularity {
+            case .sentence:
+                if pendingBreak && !isTerminator && !"」』）)”’".contains(character) {
+                    raw.append(buffer); buffer = ""; pendingBreak = false
+                }
+                buffer.append(character)
+                if isTerminator { pendingBreak = true }
+            case .phrase:
+                if character.isWhitespace {
+                    if !buffer.isEmpty { raw.append(buffer); buffer = "" }
+                } else {
+                    buffer.append(character)
+                }
+            }
+        }
+        if !buffer.isEmpty { raw.append(buffer) }
+        var result: [String] = []
+        for piece in raw {
+            let trimmed = piece.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            if trimmed.unicodeScalars.contains(where: { $0.properties.isAlphabetic }) || result.isEmpty {
+                result.append(trimmed)
+            } else {
+                result[result.count - 1] += trimmed
+            }
+        }
+        return result
+    }
+}
+
 /// 게임·만화의 짧은 표기는 단독 번역에서 장르와 제작진을 낱말 뜻으로 잘못 옮긴다.
 /// 정확히 일치하는 이미지 문구와 명시된 게임 직업만 보완하며 외부 번역 결과에는 적용하지 않는다.
 enum BrowserImagePhraseTranslation {
@@ -1400,8 +1690,9 @@ actor BrowserDirectTranslator: BrowserTextTranslating {
             "sessionCacheHit": sessions[key] != nil, "outcome": "error"]
         let preparationStart = clock.now
         let session: TranslationSession
+        let isFresh: Bool
         do {
-            session = try await self.session(for: key, source: source, target: target)
+            (session, isFresh) = try await self.session(for: key, source: source, target: target)
         } catch {
             diagnostic["outcome"] = "prepare_failed"
             diagnostic["prepareMs"] = OnboardDiagnostics.milliseconds(clock.now - preparationStart)
@@ -1436,6 +1727,9 @@ actor BrowserDirectTranslator: BrowserTextTranslating {
         let requests = texts.enumerated().map { TranslationSession.Request(sourceText: $0.element, clientIdentifier: String($0.offset)) }
         let responses: [TranslationSession.Response]
         do {
+            if isFresh {
+                try await session.prepareTranslation()
+            }
             responses = try await collect(session, requests, partial: partial, started: translationStart, stats: &partialStats)
             diagnostic["outcome"] = "ok"
         } catch {
@@ -1447,29 +1741,43 @@ actor BrowserDirectTranslator: BrowserTextTranslating {
             dropSession(key)
             if TranslationError.notInstalled ~= error {
                 try Task.checkCancellation()
-                // 빠른 전략(lowLatency) 팩이 실제로 없으면 내려받기를 안내한다. 기본(느린) 전략으로 바꿔 번역하지 않는다.
-                let installed = await makeAvailability().status(from: Locale.Language(identifier: source),
-                                                                to: Locale.Language(identifier: target)) == .installed
-                diagnostic["fastPackInstalled"] = installed
-                guard installed else {
-                    diagnostic["outcome"] = "language_not_installed"
-                    throw BrowserEngineError.languageNotInstalled("\(source)→\(target)")
+                let from = Locale.Language(identifier: source), to = Locale.Language(identifier: target)
+                let subsequentStatus = await makeAvailability().status(from: from, to: to)
+                let isInstalled = subsequentStatus == .installed
+                let isContradictorySupported = subsequentStatus == .supported
+                diagnostic["fastPackInstalled"] = isInstalled
+                diagnostic["subsequentStatus"] = "\(subsequentStatus)"
+                // 처음 세션을 얻을 때 이미 .installed 상태를 확인했으므로,
+                // 번역 직후 일시적으로 .supported로 보고되는 모순 상태(contradictory installed->supported)에서도
+                // 언어팩 누락으로 잘못 판단하지 않고 같은 전략(lowLatency)으로 1회 유계 복구를 시도한다.
+                guard isInstalled || isContradictorySupported else {
+                    diagnostic["outcome"] = subsequentStatus == .unsupported ? "unsupported_language" : "language_not_installed"
+                    if subsequentStatus == .unsupported {
+                        throw BrowserEngineError.unsupportedPair("\(source)→\(target)")
+                    } else {
+                        throw BrowserEngineError.languageNotInstalled("\(source)→\(target)")
+                    }
                 }
-                // 설치 여부와 번역 세션의 응답이 모순되는 일시적 오류이므로, 같은 전략(lowLatency)의 새 세션에서 딱 한 번만 재시도한다.
                 diagnostic["retried"] = true
-                let retry = try await self.session(for: key, source: source, target: target)
+                diagnostic["contradictoryRecovery"] = isContradictorySupported
+                let retry = self.createSession(for: key, from: from, to: to,
+                                               reason: isContradictorySupported ? "macOS>=26.4, contradictory supported recovery" : "macOS>=26.4, retry installed")
                 diagnostic["retryStrategy"] = sessionInfo[key]?.strategy ?? "unknown"
                 do {
+                    try await retry.prepareTranslation()
                     responses = try await collect(retry, requests, partial: partial, started: translationStart, stats: &partialStats)
                     diagnostic["outcome"] = "ok_after_retry"
-                }
-                catch {
+                } catch {
                     dropSession(key)
                     diagnostic.merge(OnboardDiagnostics.errorFields(error)) { $1 }
                     try Task.checkCancellation()
                     if TranslationError.notInstalled ~= error {
                         diagnostic["outcome"] = "retry_not_installed"
                         throw BrowserEngineError.translationFailed("언어팩은 설치되어 있지만 번역 서비스가 응답하지 않습니다. 다시 번역하세요.")
+                    }
+                    if TranslationError.unsupportedLanguagePairing ~= error {
+                        diagnostic["outcome"] = "unsupported_language"
+                        throw BrowserEngineError.unsupportedPair("\(source)→\(target)")
                     }
                     diagnostic["outcome"] = "retry_failed"
                     throw error
@@ -1489,8 +1797,8 @@ actor BrowserDirectTranslator: BrowserTextTranslating {
         return output
     }
 
-    private func session(for key: String, source: String, target: String) async throws -> TranslationSession {
-        if let session = sessions[key] { return session }
+    private func session(for key: String, source: String, target: String) async throws -> (session: TranslationSession, isFresh: Bool) {
+        if let session = sessions[key] { return (session, false) }
         let from = Locale.Language(identifier: source), to = Locale.Language(identifier: target)
         switch await makeAvailability().status(from: from, to: to) {
         case .installed: break
@@ -1498,16 +1806,23 @@ actor BrowserDirectTranslator: BrowserTextTranslating {
         case .unsupported: throw BrowserEngineError.unsupportedPair("\(source)→\(target)")
         @unknown default: throw BrowserEngineError.unsupportedPair("\(source)→\(target)")
         }
-        // 빠른 전략이 있는 macOS에서는 항상 lowLatency 세션만 만든다(기본 전략으로 대체해 캐시에 남기지 않는다).
+        let reason: String
+        if #available(macOS 26.4, *) { reason = "macOS>=26.4, installed" } else { reason = "macOS<26.4" }
+        let session = createSession(for: key, from: from, to: to, reason: reason)
+        return (session, true)
+    }
+
+    private func createSession(for key: String, from: Locale.Language, to: Locale.Language, reason: String) -> TranslationSession {
         let session: TranslationSession
         if #available(macOS 26.4, *) {
             session = TranslationSession(installedSource: from, target: to, preferredStrategy: .lowLatency)
-            sessionInfo[key] = ("lowLatency", "macOS>=26.4, installed")
+            sessionInfo[key] = ("lowLatency", reason)
         } else {
             session = TranslationSession(installedSource: from, target: to)
-            sessionInfo[key] = ("default", "macOS<26.4")
+            sessionInfo[key] = ("default", reason)
         }
         sessions[key] = session
+        sessionOrder.removeAll { $0 == key }
         sessionOrder.append(key)
         while sessionOrder.count > Self.maxSessions, let oldest = sessionOrder.first, !busyKeys.contains(oldest) {
             dropSession(oldest)

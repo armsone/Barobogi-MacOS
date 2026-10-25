@@ -1052,6 +1052,8 @@ function sanitizeImages(images) {
       return {
         // 상한을 넘는 번역문은 잘라 쓰지도, 항목을 빼서(가림 없이) 원문 글자를 다시 드러내지도 않는다. 빈 번역(내용 스크립트의
         // "번역 확인 필요" 표시)으로 둔다.
+        // id: 이번 요청 안에서 문단마다 유일한 인식 식별자(번역문과 무관). 확장이 같은 문단의 반복·재시도 결과를 한 항목으로 합치는 데 쓴다.
+        ...(typeof item.id === "string" && /^[A-Za-z0-9#:._-]{1,64}$/.test(item.id) ? { id: item.id } : {}),
         x: item.x, y: item.y, w: item.w, h: item.h, t: item.t.length <= LIMITS.textLength ? item.t : "",
         bg: hex.test(item.bg) ? item.bg : "#FFFFFF",
         fg: hex.test(item.fg) ? item.fg : "#000000",
@@ -1192,10 +1194,18 @@ async function handleContent(message, sender) {
         capture.calibration.y + capture.calibration.h <= viewport.h ? capture.calibration : null;
       const id = native.nextId("o");
       const line = timelineFor(tab.id, message.action);
+      const partialKey = engine === LOCAL_ENGINE && typeof message.partialKey === "string" && /^p[0-9]+-[a-z0-9]{1,12}$/.test(message.partialKey)
+        ? message.partialKey : null;
       let externalRequest = null;
       const response = await trackedRequest(line, "ocr", (r) => {
         const recordProgress = progressRecorder(tab.id, id, "ocr", engine, page ? message.token : null, line, r);
         const onProgress = (update) => {
+          if (update.phase === "partial") {
+            if (!partialKey || epoch !== control.epoch || !native.pending.has(id)) return;
+            const images = sanitizeImages(update.images);
+            if (images.length) Promise.resolve(api.tabs.sendMessage(tab.id, { cmd: "partialImage", key: partialKey, images }, { frameId: 0 })).catch(() => {});
+            return;
+          }
           recordProgress?.(update);
           const c = update.counts;
           if (page && Number.isInteger(c?.totalItems) && c.totalItems >= 0 && c.totalItems <= 10000000 &&
