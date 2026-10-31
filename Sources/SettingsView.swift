@@ -99,7 +99,7 @@ public struct SettingsView: View {
             HStack {
                 HTTThemeButton()
                 Spacer()
-                Text("1.0.0")
+                Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—")
                     .font(.caption2)
                     .foregroundStyle(palette.muted)
             }

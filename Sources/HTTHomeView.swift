@@ -259,7 +259,7 @@ public struct HTTHomeView: View {
                     HStack {
                         Text("주요 기능:")
                             .font(.subheadline.bold())
-                        Text("앱별 언어 전환, 한글 오타 교정, 첫 단어 복구, 단어 변환 및 한영 번역 (''), 줄 전체 번역 (\\\\, macOS 26+), 트랙패드 보호 (긴급 잠금 해제 ⌃⌥⌘⎋)")
+                        Text(verbatim: "앱별 언어 전환, 한글 오타 교정, 첫 단어 복구, 단어 변환 및 한영 번역 (''), 문장 뒤 백슬래시 두 번으로 번역 (\\\\, macOS 26+), 트랙패드 보호 (긴급 잠금 해제 ⌃⌥⌘⎋)")
                             .font(.subheadline)
                             .foregroundStyle(palette.text2)
                     }
@@ -325,7 +325,7 @@ public struct HTTHomeView: View {
                     HStack {
                         Text("안전 원칙:")
                             .font(.subheadline.bold())
-                        Text("점검 → 선택 → 최종 확인 → 휴지통 이동. 확인 전에는 파일을 삭제하지 않으며 휴지통으로 안전하게 이동합니다.")
+                        Text("수동 정리는 항목 선택과 최종 확인 후 실행합니다. 자동 정리는 저위험 파일만 휴지통으로 옮깁니다. 시뮬레이터 삭제·데이터 초기화는 되돌릴 수 없습니다.")
                             .font(.subheadline)
                             .foregroundStyle(palette.text2)
                     }
