@@ -25,7 +25,7 @@ struct AISettingsView: View {
             } header: {
                 Text("Dock")
             } footer: {
-                Text("켜면 Dock에도 Barobogi 아이콘을 표시합니다.")
+                Text("켜면 Dock에도 HTT 아이콘을 표시합니다.")
             }
 
             Section {

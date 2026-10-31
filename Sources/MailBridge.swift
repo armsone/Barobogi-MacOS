@@ -20,7 +20,7 @@ enum MailBridgeError: LocalizedError, Equatable {
         case .mailNotRunning:
             return "Mail 앱이 실행 중이 아닙니다. Mail을 열고 번역할 메시지를 선택한 뒤 다시 시도하세요."
         case .notAuthorized:
-            return "Mail 접근이 허용되지 않았습니다. 시스템 설정 › 개인정보 보호 및 보안 › 자동화에서 '바로보기'의 Mail 항목에 허용이 필요합니다, 또는 '.eml 파일 열기'를 사용하세요. (이 앱은 보안 설정을 변경하지 않습니다.)"
+            return "Mail 접근이 허용되지 않았습니다. 시스템 설정 › 개인정보 보호 및 보안 › 자동화에서 'HTT'의 Mail 항목에 허용이 필요합니다, 또는 '.eml 파일 열기'를 사용하세요. (이 앱은 보안 설정을 변경하지 않습니다.)"
         case .noSelection:
             return "Mail에서 선택된 메시지가 없습니다. 메시지 목록에서 메시지 하나를 선택하세요."
         case .emptySource:

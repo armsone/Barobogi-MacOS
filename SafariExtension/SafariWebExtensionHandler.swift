@@ -36,8 +36,8 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
                 return true
             }
             return launched
-                ? "Barobogi 앱을 열었습니다. 앱의 설정 › 브라우저 번역에서 번역 언어 팩을 받아 주세요(이 Safari 확장은 다운로드 화면을 직접 열 수 없습니다)."
-                : "Barobogi 앱을 찾지 못했습니다. Barobogi 앱을 직접 열어 설정 › 브라우저 번역에서 번역 언어 팩을 받아 주세요."
+                ? "HTT 앱을 열었습니다. 앱의 설정 › 브라우저 번역에서 번역 언어 팩을 받아 주세요(이 Safari 확장은 다운로드 화면을 직접 열 수 없습니다)."
+                : "HTT 앱을 찾지 못했습니다. HTT 앱을 직접 열어 설정 › 브라우저 번역에서 번역 언어 팩을 받아 주세요."
         })
     }()
 

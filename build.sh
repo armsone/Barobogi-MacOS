@@ -1,5 +1,5 @@
 #!/bin/bash
-# Barobogi.app 빌드 스크립트
+# HTT.app 빌드 스크립트
 # 사용법: ./build.sh
 #   SIGN_IDENTITY  : 서명 인증서 SHA1 (기본: 기존 Developer ID Application, 팀 T7B4EPLHPK)
 #   SIGN_TIMESTAMP : 1이면 보안 타임스탬프 포함(배포/공증용, 네트워크 필요)
@@ -7,9 +7,9 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$ROOT_DIR/build"
-APP_NAME="Barobogi"
+APP_NAME="HTT"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"
-EXECUTABLE_NAME="Barobogi"
+EXECUTABLE_NAME="HTT"
 BUNDLE_ID="com.local.screentranslator"
 SPARKLE_DIR="$ROOT_DIR/Vendor/Sparkle"
 # 앱 본체 권한: Mail 선택 메시지 읽기용 Apple Events만(hardened runtime 유지, 라이브러리 검증 완화 없음)
@@ -40,6 +40,14 @@ else
   SWIFT_TARGET="x86_64-apple-macos15.0"
 fi
 
+SWIFT_SOURCES=(
+  "$ROOT_DIR"/Sources/*.swift
+  "$ROOT_DIR"/Sources/InputMate/*.swift
+  "$ROOT_DIR"/Sources/InputMateCore/*.swift
+  "$ROOT_DIR"/Sources/BTN/*.swift
+  "$ROOT_DIR"/Sources/BTNCore/*.swift
+)
+
 echo "==> Swift 소스 컴파일 (target: $SWIFT_TARGET)"
 xcrun swiftc \
   -O \
@@ -63,7 +71,7 @@ xcrun swiftc \
   -Xlinker -weak_framework -Xlinker FoundationModels \
   -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
   -o "$APP_BUNDLE/Contents/MacOS/$EXECUTABLE_NAME" \
-  "$ROOT_DIR"/Sources/*.swift
+  "${SWIFT_SOURCES[@]}"
 
 # 브라우저 번역: Chrome·Whale 네이티브 메시징 도우미, 압축 해제용 확장, Safari 웹 확장(.appex)
 APP_VERSION="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$ROOT_DIR/Info.plist")"

@@ -864,7 +864,7 @@ final class WebTranslatorRunner {
             backgroundWindow?.hide()
             webView.removeFromSuperview()
             webView.interactive = true
-            let window = AIBIBrowserWindow(title: "\(site.translator.title) — 바로보기 웹 번역",
+            let window = AIBIBrowserWindow(title: "\(site.translator.title) — HTT 웹 번역",
                                            header: WebTranslatorTaskHeader(), webView: webView)
             window.onUserClose = { [weak self] in
                 self?.window = nil
@@ -1308,7 +1308,7 @@ final class WebTranslatorStatusPanel: NSObject, NSWindowDelegate {
                         styleMask: [.titled, .closable, .nonactivatingPanel, .utilityWindow],
                         backing: .buffered, defer: false)
         super.init()
-        panel.title = "Barobogi 웹 번역 진행 중"
+        panel.title = "HTT 웹 번역 진행 중"
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false
         panel.isFloatingPanel = true
@@ -1472,7 +1472,7 @@ final class WebTranslatorBrowserBridge: BrowserExternalTranslating {
             guard let translator = WebTranslator(rawValue: engine) else { return "알 수 없는 번역 엔진입니다." }
             guard WebTranslatorConsentStore.shared.hasConsent(translator) else {
                 let section = WebTranslatorConsentStore.pageTranslators.contains(translator) ? "현재 페이지 외부 번역 전송 동의" : "웹 번역 전송 동의"
-                return "Barobogi 앱에서 \(translator.title) 전송 동의가 필요합니다. Barobogi 메뉴 막대 › 설정… › \(section)에서 동의한 뒤 다시 시도하세요."
+                return "HTT 앱에서 \(translator.title) 전송 동의가 필요합니다. HTT 메뉴 막대 › 설정… › \(section)에서 동의한 뒤 다시 시도하세요."
             }
             return nil
         }

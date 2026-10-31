@@ -71,12 +71,16 @@ final class MailWindowCoordinator: NSObject, NSWindowDelegate {
         NSApp.activate()
         settingsSection.section = section
         if settingsWindow == nil {
-            let hosting = NSHostingController(rootView: SettingsView(store: settingsSection))
+            let rootView = SettingsView(store: settingsSection)
+                .environmentObject(InputMateCoordinator.shared.appState)
+                .environmentObject(InputMateCoordinator.shared.settings)
+                .environmentObject(InputMateCoordinator.shared.appInputLanguageStore)
+            let hosting = NSHostingController(rootView: rootView)
             let window = NSWindow(contentViewController: hosting)
-            window.title = "바로보기 설정"
+            window.title = "HTT 설정"
             // 메일 결과 창과 구분되는 설정 창 식별자
             window.identifier = NSUserInterfaceItemIdentifier("settings")
-            window.styleMask = [.titled, .closable, .miniaturizable]
+            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
             window.isReleasedWhenClosed = false
             window.tabbingMode = .disallowed
             window.delegate = self

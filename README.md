@@ -1,25 +1,55 @@
-# 바로보기 (Barobogi) v0.9.7
+# HTT (Hanstree Translation & Touch Tools) v0.10.0
 
-- **소스**: [github.com/armsone/Barobogi-MacOS](https://github.com/armsone/Barobogi-MacOS) (공개)
-- **다운로드(DMG)**: [최신 릴리스](https://github.com/armsone/Barobogi-MacOS/releases/latest)
+- **소스**: [github.com/armsone/HTT-MacOS](https://github.com/armsone/HTT-MacOS) (공개)
+- **다운로드(DMG)**: [최신 릴리스](https://github.com/armsone/HTT-MacOS/releases/latest)
   — Developer ID 서명 및 Apple 공증(notarization)을 거친 Apple Silicon(arm64) 전용 빌드입니다.
 - **요구 사항**: macOS 15 이상, Apple Silicon(arm64) Mac. Intel(x86_64)은 지원하지 않습니다.
 
-macOS 15 이상용 네이티브 앱입니다. 하나의 앱 안에 세 기능이 있습니다.
+macOS 15 이상용 네이티브 생산성 앱입니다. 하나의 앱 안에 다섯 가지 통합 기능이 있습니다.
 
 - **화면 번역**: 화면 위에 투명한 사각형 창 하나를 띄워 두고, 주 버튼을 누를 때마다 **한 번** 그 안을
   캡처해 텍스트를 인식(Vision OCR)하고 번역한 뒤, **번역문을 원문 줄이 있던 바로 그 위치에** 겹쳐 보여줍니다.
-- **메일 번역**(0.2.0에서 기존 '메일 번역기'의 기능을 이 앱에 합침): Apple Mail에서 선택한 메시지를 읽어
+- **메일 번역**: Apple Mail에서 선택한 메시지를 읽어
   HTML 서식·표·이미지를 유지한 별도 결과 창에서 제목·본문·이미지 속 글자를 번역합니다.
-- **브라우저 번역**(0.4.0, 신규): Chrome·Whale 확장(수동 설치) 또는 Safari 확장이 페이지 글자와 보이는 탭
+- **브라우저 번역**: Chrome·Whale 확장(수동 설치) 또는 Safari 확장이 페이지 글자와 보이는 탭
   화면(이미지 글자용)을 이 앱의 브라우저 번역 엔진으로 보내 그 자리에서 번역해 보여줍니다. 자세한 설치·사용·제한은
   [브라우저 번역](#브라우저-번역) 참고.
+- **입력 도우미 & 트랙패드 보호 (InputMate 통합)**:
+  - 영문 자판 오타 자동 교정(dkssud → 안녕) 및 빈 입력창 첫 단어 입력 복구
+  - '' (따옴표 두 번) 단어 수동 변환 및 한영 번역, 월 표기(5월'' → May), 인명 로마자 표기
+  - \\\\ (역슬래시 두 번) 줄 전체 문장 번역
+  - 학습된 개인 사전 사용 및 자동 학습 (학습된 사전 확인/수정/삭제)
+  - 키보드 타이핑 시 트랙패드 잠금 보호(커서·클릭·스크롤 차단 및 활성 영역 터치 시 해제)
+  - 앱별 입력 언어 자동 전환 (활성화된 앱에 맞춰 한글/영문 자판 자동 전환)
+- **Mac 관리 및 개발 저장 공간 정리 (BTN 통합)**:
+  - 3개의 독립 토글: 'Mac 관리 사용', '30초 자동 새로고침', '정리 기능 사용'. 신규 설치 시 Mac 관리 및 정리 기능은 기본 꺼짐(관찰 전용)으로 안전하게 시작합니다.
+  - 기존 com.nasfinder.BackToNormal의 보호 대상 목록과 정리 이력을 1회 안전하게 자동 이전하며, 기존 HTT 설정을 우선 보존하고 원본 파일은 변경하지 않습니다.
+  - 원본 독립 BTN 앱이 실행 중이면 중복 관측과 정리 경합을 막기 위해 작업을 안전하게 일시정지하고, 기존 BTN 종료 시 자동으로 정상 복구됩니다.
+  - 정리는 절대 자동으로 임의 수행되지 않으며, 사용자가 대상을 직접 확인하고 선택한 뒤에만 명시적으로 실행됩니다 (Xcode DerivedData, 시뮬레이터, 프로세스 등).
 
 캡처 이미지·인식 텍스트·메일 내용·번역 결과는 메모리에서만 다루며 디스크에 저장하지 않습니다.
 화면·메일·브라우저 번역은 모두 **Mac 기본 번역(기기 내, 고정)**으로 처리하며, 가능한 기기에서는 그 번역문을
 온디바이스 Apple Intelligence가 뜻을 바꾸지 않고 표현만 다시 다듬습니다(선택 UI 없이 자동, 아래 [번역 방식](#번역-방식) 참고).
 이 기본 경로는 외부로 아무것도 보내지 않습니다. 외부 AI(ChatGPT·Claude·Gemini)나 웹 번역기(DeepL·Google
 번역·Papago)를 직접 고르고 전송에 동의한 뒤 번역을 실행할 때만 **텍스트**가 해당 서비스로 전송됩니다.
+
+### 0.10.0 변경 사항
+
+- **Mac 관리(BTN) 통합 완료**:
+  - 독립 BTN(BackToNormal)의 Mac 관리 및 정리 기능을 HTT 본체로 안전하게 통합했습니다.
+  - 시스템 부하, 메모리 압박, 개발 저장 공간(Xcode DerivedData, 시뮬레이터, 프로세스 등) 진단을 제공합니다.
+  - 3개의 독립 토글('Mac 관리 사용', '30초 자동 새로고침', '정리 기능 사용')을 통해 모듈 동작을 완벽히 제어할 수 있습니다.
+  - 기존 com.nasfinder.BackToNormal 보호 목록 및 정리 이력의 일회성 안전 이전(기존 HTT 설정 우선, 원본 불변, 오류 시 정리 차단).
+  - 원본 BTN 앱이 실행 중일 때 일시정지하며, 종료 시 원래 설정대로 자동 복구됩니다.
+  - 정리는 사용자가 직접 선택/확인한 후에만 수행되어 개발 환경을 안전하게 보호합니다.
+- **InputMate 통합 완료**:
+  - 기존 TrackpadGuard의 입력 도우미(한글 오타 교정, 단어 변환, 문장 번역, 첫 단어 복구, 앱별 언어 규칙, 개인 사전, 트랙패드 보호)를 HTT 본체로 완전 통합했습니다.
+  - 메뉴 막대 및 설정 창에서 전체 입력 도우미를 즉시 일시정지하거나 재개할 수 있는 빠른 토글을 제공합니다.
+  - 설정 창의 '입력 도우미' 탭에서 각 기능(자동 교정, 첫 단어, 단어 변환, 문장 번역, 개인 사전, 트랙패드 보호)을 독립적으로 제어할 수 있습니다.
+  - 트랙패드 보호 기능이 꺼져 있어도 키보드 오타 교정 및 단어 변환은 정상 작동합니다.
+  - 앱 첫 실행 시 기존 com.armsone.TrackpadGuard 설정과 개인 사전을 1회 안전하게 자동 이전하며, 기존 값을 우선 보존하고 재실행 시 사용자 수정분이 덮어써지지 않도록 보호합니다.
+  - 기존 TrackpadGuard와의 중복 실행 충돌을 감지해 안전하게 일시중지합니다.
+  - **손쉬운 사용(Accessibility) 권한 격리**: 입력 이벤트 감시 및 커서 조작에 필요한 손쉬운 사용 권한은 오직 입력 도우미 기능에만 요구되며, 화면 번역/메일 번역/브라우저 번역에는 추가 권한을 요구하지 않습니다.
 
 
 ### 0.9.7 변경 사항
@@ -146,7 +176,7 @@ macOS 15 이상용 네이티브 앱입니다. 하나의 앱 안에 세 기능이
 - **일반 설정**: Dock 아이콘 표시(기본 꺼짐), Mail 위 번역 버튼, 로그인 시 자동 시작을 한곳에서 변경합니다.
 - **앱 시작**: 화면 번역 창을 자동으로 열지 않습니다. Finder나 Dock에서 앱을 다시 열어도 숨긴 창은 그대로 두며,
   메뉴 막대 또는 ⌃⌥⇧⌘T로 필요할 때 엽니다.
-- **브라우저 연결**: 브라우저 설정의 `연결 다시 확인`은 Barobogi와 브라우저 사이의 연결을 확인·복구합니다.
+- **브라우저 연결**: 브라우저 설정의 `연결 다시 확인`은 HTT와 브라우저 사이의 연결을 확인·복구합니다.
   웹페이지를 새로고침하는 버튼이 아닙니다.
 
 ## 메일 번역
@@ -195,20 +225,20 @@ Apple Intelligence 다듬기)만 씁니다. 외부 AI나 웹 번역기로는 보
   설정 없음). 리스너가 절전 복귀나 드문 치명적 오류로 죽어도 이미 접속된 다른 브라우저·탭·진행 중인 번역은 건드리지
   않은 채 리스너만 조용히 되살리려 시도합니다(시스템 깨어남, 도우미의 복구 요청 신호가 계기). `브라우저 번역` 탭의
   `새로고침` 버튼을 누르면 리스너가 실제로 죽어 있을 때만 같은 방식으로 다시 열고, 이미 정상이면 아무 것도 바꾸지
-  않습니다. 반복 실패하면 더 이상 자동 재시도하지 않고 Barobogi를 다시 시작하라고 안내합니다.
-- **Safari**(macOS 26 이상 + 해당 언어의 번역 언어 팩 설치 필요): 확장이 Barobogi 앱 안에 들어 있어 별도 설치가 없습니다.
-  Barobogi를 `/Applications`에서 한 번 실행한 뒤 Safari › 설정 › 확장 프로그램에서 `Barobogi 웹 번역`을 켜고 웹 사이트 접근을
+  않습니다. 반복 실패하면 더 이상 자동 재시도하지 않고 HTT를 다시 시작하라고 안내합니다.
+- **Safari**(macOS 26 이상 + 해당 언어의 번역 언어 팩 설치 필요): 확장이 HTT 앱 안에 들어 있어 별도 설치가 없습니다.
+  HTT를 `/Applications`에서 한 번 실행한 뒤 Safari › 설정 › 확장 프로그램에서 `HTT 웹 번역`을 켜고 웹 사이트 접근을
   허용하면 됩니다. Safari는 앱 본체와 통신하지 않고 확장 프로세스 안에서 화면 없이 직접 번역하므로, macOS 26 미만이거나
   언어 팩이 없으면 안내만 뜨고 동작하지 않습니다(이 경우 Chrome·Whale 사용).
-- **번역 언어 팩**: 확장 팝업의 `언어팩` 버튼을 누르면 Barobogi 앱 안에서 원문→번역 언어쌍을 고르고 `받기`를 누르는
+- **번역 언어 팩**: 확장 팝업의 `언어팩` 버튼을 누르면 HTT 앱 안에서 원문→번역 언어쌍을 고르고 `받기`를 누르는
   다운로드 시트가 바로 열립니다(이미 설치돼 있으면 화면 변화 없이 바로 끝남). Safari 확장은 앱 본체와 통신할 수 없어
-  대신 Barobogi 앱을 실행시키고, 앱 안의 같은 다운로드 화면을 쓰라고 안내합니다.
+  대신 HTT 앱을 실행시키고, 앱 안의 같은 다운로드 화면을 쓰라고 안내합니다.
 - **팝업**: 위쪽에 `원문 보기`/`번역 보기` 큰 전환 스위치가 있어 지금 상태 쪽이 강조됩니다. 번역 언어, 번역 글꼴
   (DOM 텍스트와 이미지 속 글자 양쪽에 적용, 자동/고딕/명조/궁서/손글씨), 언어팩 버튼이 그 아래 있습니다. 이미지 속
   글자 번역은 항상 켜져 있습니다(끄는 옵션 없음). 번역·인식·다듬기가 실제로 진행 중일 때만 상태 줄에 작은 회전
   스피너가 돕니다(감시만 하는 동안은 돌지 않음, 가짜 진행률 없음).
 - **툴바 아이콘**: 지금 탭이 원문이면 주황, 번역이면 기존 파랑(둘 다 번들 아이콘 자체의 색조만 바꾼 것)이며, 실제
-  처리 중에는 배지(`···`)가 추가로 붙습니다. 툴바의 Barobogi 아이콘을 눌러 팝업을 열 때마다(팝업이 열리는 그 순간 한
+  처리 중에는 배지(`···`)가 추가로 붙습니다. 툴바의 HTT 아이콘을 눌러 팝업을 열 때마다(팝업이 열리는 그 순간 한
   번만) 지금 탭의 원문 ↔ 번역을 토글합니다 — 다른 탭의 전역 자동 번역 상태는 건드리지 않습니다.
 - **동작**: 팝업의 `번역 보기`를 누르면 그 자리에서 번역하고 전역 자동 번역을 켭니다. Chrome·Whale은 이때 선택 권한
   `<all_urls>`(브라우저 확인 창의 '모든 웹사이트의 데이터 읽기 및 변경')를 그 클릭 안에서 요청합니다. Chrome 문서상
@@ -313,7 +343,7 @@ Apple Intelligence 다듬기)만 씁니다. 외부 AI나 웹 번역기로는 보
   캡처 전에 가용성을 확인하지 않고, 화면에서 실제로 감지한 언어를 번역할 때 그 언어 조합만 안내됩니다.
 - **Mail 자동화(Apple Events)**: 선택한 메일 번역을 실행할 때만 Mail의 선택 메시지 원본을 읽기 위해 사용합니다.
   처음 실행 시 macOS가 `Mail 제어` 허용 여부를 한 번 묻습니다(허용은 사용자의 선택이며 앱이 반복해서 묻거나 설정을
-  바꾸지 않음). 거부했다면 시스템 설정 › 개인정보 보호 및 보안 › 자동화 › 바로보기 › Mail에서 직접 허용하거나
+  바꾸지 않음). 거부했다면 시스템 설정 › 개인정보 보호 및 보안 › 자동화 › HTT › Mail에서 직접 허용하거나
   `.eml 파일 열기`를 쓸 수 있습니다. 앱은 `com.apple.security.automation.apple-events` 권한 항목만 추가로 가지며
   Hardened Runtime과 라이브러리 검증은 그대로입니다.
 - **손쉬운 사용**: 요청하지 않습니다(`AXIsProcessTrusted`로 확인만 하며 권한 요청 대화상자를 띄우는 호출은 쓰지 않음).
@@ -338,11 +368,11 @@ Apple Intelligence 다듬기)만 씁니다. 외부 AI나 웹 번역기로는 보
 - 표준 `SPUStandardUpdaterController` 사용. 기본값: `SUEnableAutomaticChecks=YES`, `SUAutomaticallyUpdate=YES`,
   `SUVerifyUpdateBeforeExtraction=YES`, 시스템 프로파일링 끔. 메뉴에서 자동 업데이트를 끌 수 있습니다.
 - 피드: `update-config.env`의 `SPARKLE_FEED_URL`
-  (`https://github.com/armsone/Barobogi-MacOS/releases/latest/download/appcast.xml`).
+  (`https://github.com/armsone/HTT-MacOS/releases/latest/download/appcast.xml`).
 - 빌드 시 `Resources/UpdatePublicKey.txt`(EdDSA **공개키**)를 `SUPublicEDKey`로 넣습니다. 공개키나 HTTPS 피드가 없으면
   업데이터를 시작하지 않고 메뉴에 이유를 표시합니다. 개인키는 저장소에 없으며 로그인 키체인에만 있습니다.
 - 피드가 아직 게시되지 않았거나(404 등) 받을 수 없으면 `업데이트 없음`이 아니라 Sparkle 오류로 표시됩니다.
-- [Barobogi-MacOS](https://github.com/armsone/Barobogi-MacOS/releases/latest)에서 최신 공개 버전과 설치 파일을 확인할 수 있습니다.
+- [HTT-MacOS](https://github.com/armsone/HTT-MacOS/releases/latest)에서 최신 공개 버전과 설치 파일을 확인할 수 있습니다.
   이 문서는 v0.7.3 기준입니다. 자동 업데이트의 실제 버전 교체
   동작은 아직 사용자 확인 전이며, 검증되었다고 단정하지 않습니다.
 
@@ -362,7 +392,7 @@ Apple Intelligence 다듬기)만 씁니다. 외부 AI나 웹 번역기로는 보
 요구 사항: Xcode 커맨드라인 도구, macOS 15 이상 SDK, 키체인의 Developer ID Application 인증서.
 
 ```bash
-./build.sh            # → build/Barobogi.app
+./build.sh            # → build/HTT.app
 ```
 
 `build.sh`가 하는 일:
@@ -433,7 +463,7 @@ Sources/
   MailBridge.swift             Mail 선택 메시지 원본 읽기(AppleScript)
   MailToolbarButton.swift      Mail 위 번역 버튼
   # 브라우저 번역(0.4.0, 신규)
-  BrowserProtocol.swift        확장 ↔ Barobogi 연결 공통 상수·프레임 입출력·서명 확인(앱·네이티브 메시징 도우미·Safari 확장 공용)
+  BrowserProtocol.swift        확장 ↔ HTT 연결 공통 상수·프레임 입출력·서명 확인(앱·네이티브 메시징 도우미·Safari 확장 공용)
   BrowserEngineCore.swift      브라우저 번역 엔진(요청 검증 + Mac 기본 번역, 앱·Safari 확장 공용)
   AppleTranslationRefiner.swift Apple Intelligence(온디바이스) 번역문 다듬기(기본 켜짐, 화면·메일·Chrome·Whale 공용)
   BrowserBridgeServer.swift    Chrome·Whale 네이티브 메시징 도우미가 접속하는 Unix 소켓 서버
@@ -444,4 +474,41 @@ Sources/
   AIBIMacEngine.swift          외부 AI 웹 로그인 어댑터(AIBI 0.5.3 macOS)
   AIBIDiagnosticsStore.swift   외부 AI 진단(내용 없는 단계·개수만)
   AISettingsView.swift         설정(번역 방식·Mail 버튼·외부 AI)
+  # InputMate 통합 (입력 도우미 & 트랙패드 보호)
+  InputMateCoordinator.swift   InputMate 전체 수명주기, 레거시 충돌 감지, 상태 통합 관리
+  InputMateMigration.swift     com.armsone.TrackpadGuard 설정 및 개인 사전 일회성 안전 이전
+  InputMate/
+    AppInputLanguageController.swift     앱별 입력 언어 자동 전환 컨트롤러
+    AppInputLanguageRule.swift           앱별 입력 언어 규칙 모델
+    AppInputLanguageSettingsView.swift   앱별 입력 언어 설정 및 일괄 편집 뷰
+    AppInputLanguageStore.swift          앱별 입력 언어 저장소
+    EventTapController.swift             CGEventTap 입력 이벤트 필터링 컨트롤러
+    FirstWordRecovery.swift              빈 입력창 첫 단어 복구 엔진
+    GuardPreferences.swift               입력 도우미 및 트랙패드 설정 모델
+    InputMateAppState.swift              InputMate 상태 머신 (이벤트탭·멀티터치·교정 연결)
+    InputMateSettingsView.swift          InputMate 통합 설정 화면 (독립 토글·사전·영역 편집)
+    KoreanTypoCorrector.swift            한글 오타 자동 교정 및 단어/문장 변환 엔진
+    MultitouchMonitor.swift              물리 트랙패드 멀티터치 감시 및 잠금 해제
+    PersonalDictionaryStore.swift        학습된 개인 사전 저장소
+    PersonalDictionaryView.swift         학습된 개인 사전 관리 시트 뷰
+    ProcessHealthMonitor.swift           프로세스 부하 감시 및 자동 복구 모니터
+    RegionEditorView.swift               트랙패드 활성 영역 시각적 편집기
+    SettingsStore.swift                  입력 도우미 설정 저장소
+    TranslationPreparationView.swift     온디바이스 번역 모델 사전 준비 뷰
+  InputMateCore/
+    ActivationRegion.swift               트랙패드 활성 사다리꼴 영역 기하 모델
+    NormalizedPoint.swift                정규화 좌표 모델 (0.0~1.0)
+  # Mac 관리 (BTN 통합)
+  BTN/
+    BTNIntegration.swift                 호스트 앱 연동 단일 진입점, 일회성 이전, 충돌 감지, 상태 요약
+    BTNSettingsView.swift                Mac 관리 설정 뷰 (3개 독립 토글, 쉬운 안내 및 다음 행동)
+    DetailView.swift                     Mac 관리 상세 창 (시스템 상태, 개발 저장 공간, 정리)
+    MonitorViewModel.swift               상태 감시 및 정리 조정 뷰모델
+  BTNCore/
+    BTNModels.swift                      지표, 정리 대상, 감사 기록 모델
+    CleanupAuditStore.swift              정리 감사 이력 저장소
+    CleanupProtectionStore.swift         보호 대상 식별자 저장소
+    SystemMetricsCollector.swift         CPU·메모리 압박 및 프로세스 수집기
+    DevelopmentStorageScanner.swift      DerivedData·시뮬레이터 등 개발 저장소 스캐너
+    CleanupExecutor.swift                안전한 단계별 정리 실행기
 ```

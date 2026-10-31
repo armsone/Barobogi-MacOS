@@ -867,7 +867,7 @@ final class AIBIRunner {
                 existing.removeFromSuperview()
                 existing.interactive = true
                 status?.isVisible = true
-                let resultWindow = AIBIBrowserWindow(title: "\(config.provider.title) — 바로보기 외부 AI", header: AIBITaskHeader(), webView: existing)
+                let resultWindow = AIBIBrowserWindow(title: "\(config.provider.title) — HTT 외부 AI", header: AIBITaskHeader(), webView: existing)
                 resultWindow.onUserClose = { [weak self] in self?.window = nil; self?.cancel() }
                 window = resultWindow
                 resultWindow.show()
@@ -937,7 +937,7 @@ final class AIBIRunner {
         let webView = makeWebView(interactive: true)
         self.webView = webView
         status?.isVisible = true
-        let window = AIBIBrowserWindow(title: "\(config.provider.title) — 바로보기 외부 AI",
+        let window = AIBIBrowserWindow(title: "\(config.provider.title) — HTT 외부 AI",
                                        header: AIBITaskHeader(), webView: webView)
         window.onUserClose = { [weak self] in
             // 사용자가 창을 닫으면 작업을 취소한다(이미 닫히는 창을 다시 닫지 않음).
@@ -1402,7 +1402,7 @@ final class AIBIAccounts {
         }
         .font(.callout)
         .padding(12)
-        let window = AIBIBrowserWindow(title: "\(provider.title) 로그인 — 바로보기", header: header, webView: webView)
+        let window = AIBIBrowserWindow(title: "\(provider.title) 로그인 — HTT", header: header, webView: webView)
         window.onUserClose = { [weak self] in
             guard let self, generation == self.loginGeneration else { return }
             self.loginGeneration += 1

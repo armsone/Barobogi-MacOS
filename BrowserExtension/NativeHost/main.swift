@@ -68,7 +68,7 @@ guard BrowserBridge.allowedOrigins.contains(origin) else {
     fail("origin_not_allowed", "허용되지 않은 확장에서 호출했습니다.")
 }
 guard let teamID = BrowserCodeSigning.ownTeamID() else {
-    fail("unsigned_helper", "Barobogi 브라우저 도우미가 Developer ID로 서명되지 않았습니다. 서명된 Barobogi를 다시 설치하세요.")
+    fail("unsigned_helper", "HTT 브라우저 도우미가 Developer ID로 서명되지 않았습니다. 서명된 HTT를 다시 설치하세요.")
 }
 
 /// 앱 본체에 "리스너 상태를 다시 확인해 달라"는 신호만 보낸다(데이터 없음). 앱은 이 신호 내용을 그대로
@@ -96,11 +96,11 @@ if engineFD == nil {
             delay = min(delay * 2, 1_000_000)
         }
         if engineFD == nil {
-            fail("engine_unavailable", "Barobogi가 실행 중이지만 브라우저 연결을 열지 못했습니다. 잠시 후 다시 시도하거나 Barobogi를 다시 시작하세요.")
+            fail("engine_unavailable", "HTT가 실행 중이지만 브라우저 연결을 열지 못했습니다. 잠시 후 다시 시도하거나 HTT를 다시 시작하세요.")
         }
     } else {
         guard launchContainingApp() else {
-            fail("app_not_found", "Barobogi 앱을 실행하지 못했습니다. Barobogi를 응용 프로그램 폴더에 설치하고 '브라우저 번역…'에서 다시 준비하세요.")
+            fail("app_not_found", "HTT 앱을 실행하지 못했습니다. HTT를 응용 프로그램 폴더에 설치하고 '브라우저 번역…'에서 다시 준비하세요.")
         }
         let deadline = Date().addingTimeInterval(12)
         while engineFD == nil, Date() < deadline {
@@ -110,13 +110,13 @@ if engineFD == nil {
     }
 }
 guard let engine = engineFD else {
-    fail("app_not_responding", "Barobogi 브라우저 연결을 복구하지 못했습니다. Barobogi 설정의 브라우저 번역에서 새로고침을 누른 뒤 다시 시도하세요.")
+    fail("app_not_responding", "HTT 브라우저 연결을 복구하지 못했습니다. HTT 설정의 브라우저 번역에서 새로고침을 누른 뒤 다시 시도하세요.")
 }
 
 // 3) 엔진 신원 확인 — 같은 사용자 + 같은 팀으로 서명된 Barobogi 앱인지
 guard BrowserCodeSigning.peerIsTrusted(fd: engine, identifier: BrowserBridge.appBundleID, teamID: teamID) else {
     close(engine)
-    fail("untrusted_engine", "연결 상대가 서명된 Barobogi가 아닙니다. Barobogi를 다시 설치하세요.")
+    fail("untrusted_engine", "연결 상대가 서명된 HTT가 아닙니다. HTT를 다시 설치하세요.")
 }
 
 // 4) 중계 — 엔진 → 브라우저는 별도 스레드, 브라우저 → 엔진은 이 스레드.
@@ -125,7 +125,7 @@ let reader = Thread {
         do {
             send(try BrowserFrameIO.readFrame(engine, maxLength: BrowserBridge.maxOutgoingFrame))
         } catch {
-            send(BrowserBridge.errorFrame(code: "engine_disconnected", message: "Barobogi 브라우저 엔진 연결이 끊겼습니다. 다시 번역하면 새로 연결합니다."))
+            send(BrowserBridge.errorFrame(code: "engine_disconnected", message: "HTT 브라우저 엔진 연결이 끊겼습니다. 다시 번역하면 새로 연결합니다."))
             exit(0)
         }
     }
@@ -146,6 +146,6 @@ while true {
     do {
         try BrowserFrameIO.writeFrame(engine, frame)
     } catch {
-        fail("engine_disconnected", "Barobogi 브라우저 엔진 연결이 끊겼습니다. 다시 번역하면 새로 연결합니다.")
+        fail("engine_disconnected", "HTT 브라우저 엔진 연결이 끊겼습니다. 다시 번역하면 새로 연결합니다.")
     }
 }

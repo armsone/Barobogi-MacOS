@@ -60,7 +60,7 @@ function render(state) {
   }
 
   if (state.settings.consent && state.engine.ok && !state.engine.enabled) {
-    showError("Barobogi 메뉴 막대 › 브라우저 번역…에서 '브라우저 확장 연결 허용'을 켜 주세요.");
+    showError("HTT 메뉴 막대 › 브라우저 번역…에서 '브라우저 확장 연결 허용'을 켜 주세요.");
   } else if (state.settings.consent && !state.engine.ok) {
     showError(state.engine.message);
   } else if (state.page?.error) {

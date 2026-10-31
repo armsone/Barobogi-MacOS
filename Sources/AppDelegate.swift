@@ -54,6 +54,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 메일 번역: Mail › 서비스 메뉴, Mail 위 번역 버튼(기본 켜짐)
         MailWindowCoordinator.shared.start()
 
+        // InputMate 수명주기 시작 (이전은 Coordinator에서 관리)
+        InputMateCoordinator.shared.start()
+        // Mac 관리(BTN) 활성화 시 수명주기 시작
+        BTNIntegration.shared.startIfEnabled()
+
         DockVisibilityStore.shared.applyInitial()
         loginItem.applyInitialDefaultIfNeeded()
         updater.start()
@@ -82,6 +87,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        InputMateCoordinator.shared.stop()
+        BTNIntegration.shared.stop()
         BrowserIntegration.shared.applicationWillTerminate()
         viewModel.stop()
         AppModel.shared.closeDocument()
@@ -148,7 +155,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let button = item.button {
             // 메뉴 막대 아이콘은 SF Symbol 대신 기존 디자인된 앱 아이콘을 그대로 축소해 쓴다(원본 색 유지).
             button.image = menuBarIconImage()
-            button.toolTip = "바로보기 (화면 \(GlobalHotKey.displayString) · 메일 \(GlobalHotKey.mailDisplayString))"
+            button.toolTip = "HTT (화면 \(GlobalHotKey.displayString) · 메일 \(GlobalHotKey.mailDisplayString))"
         }
         let menu = NSMenu()
         menu.delegate = self
@@ -187,8 +194,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(item("메일 번역 창 열기", #selector(showMailWindow), symbol: "envelope.open"))
 
         menu.addItem(.separator())
+        let isInputEnabled = InputMateCoordinator.shared.settings.preferences.isEnabled
+        let inputToggle = item(
+            isInputEnabled ? "입력 기능 일시정지" : "입력 기능 켜기",
+            #selector(toggleInputMateEnabled),
+            symbol: isInputEnabled ? "keyboard" : "pause.circle"
+        )
+        menu.addItem(inputToggle)
+        menu.addItem(item("Mac 관리…", #selector(showMacManagement), symbol: "cpu"))
         menu.addItem(item("설정…", #selector(showSettings), symbol: "gearshape"))
         menu.addItem(item("브라우저 번역…", #selector(showBrowserSetup), symbol: "globe"))
+        menu.addItem(item("입력 설정…", #selector(showInputSettings), symbol: "keyboard.badge.ellipsis"))
+        menu.addItem(item("Mac 관리 설정…", #selector(showMacManagementSettings), symbol: "slider.horizontal.3"))
         let status = item("앱 상태", nil, symbol: "info.circle")
         status.submenu = statusMenu()
         menu.addItem(status)
@@ -197,15 +214,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let warning = actionNeededWarningItem() {
             menu.addItem(warning)
         }
-        menu.addItem(item("바로보기 정보", #selector(showAbout), symbol: "questionmark.circle"))
+        menu.addItem(item("HTT 정보", #selector(showAbout), symbol: "questionmark.circle"))
         menu.addItem(item("업데이트 확인…", #selector(checkForUpdates), symbol: "arrow.down.circle"))
-        menu.addItem(item("바로보기 종료", #selector(NSApplication.terminate(_:)), target: NSApp, symbol: "power"))
+        menu.addItem(item("HTT 종료", #selector(NSApplication.terminate(_:)), target: NSApp, symbol: "power"))
     }
 
     /// 앱 아이콘·이름·버전을 보여주는 비활성 머리글 행
     private func headerItem() -> NSMenuItem {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
-        let title = version.isEmpty ? "Barobogi" : "Barobogi v\(version)"
+        let title = version.isEmpty ? "HTT" : "HTT v\(version)"
         let header = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         header.isEnabled = false
         if let icon = NSApp.applicationIconImage {
@@ -225,7 +242,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func actionNeededWarningItem() -> NSMenuItem? {
         let hotKeyFailed = hotKey?.isRegistered == false || mailHotKey?.isRegistered == false
         let loginNeedsApproval = loginItem.status == .requiresApproval
-        guard hotKeyFailed || loginNeedsApproval else { return nil }
+        let inputNeedsAccessibility = InputMateCoordinator.shared.settings.preferences.isEnabled &&
+            InputMateCoordinator.shared.appState.serviceStatus == .needsAccessibility
+        guard hotKeyFailed || loginNeedsApproval || inputNeedsAccessibility else { return nil }
+
+        if inputNeedsAccessibility {
+            let warning = item("입력 기능 손쉬운 사용 권한 필요", #selector(openAccessibilitySettings), symbol: "exclamationmark.triangle")
+            warning.isEnabled = true
+            return warning
+        }
+
         let text = hotKeyFailed ? "단축키 등록 실패 — 앱 상태 확인" : "로그인 항목 승인 필요"
         let warning = item(text, hotKeyFailed ? nil : #selector(openLoginItemsSettings), symbol: "exclamationmark.triangle")
         warning.isEnabled = !hotKeyFailed
@@ -243,6 +269,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if loginItem.status == .requiresApproval {
             submenu.addItem(item("로그인 항목 설정 열기…", #selector(openLoginItemsSettings), symbol: nil))
         }
+        submenu.addItem(.separator())
+        submenu.addItem(info("입력 도우미: \(InputMateCoordinator.shared.appState.statusText)"))
+        if case .needsAccessibility = InputMateCoordinator.shared.appState.serviceStatus {
+            submenu.addItem(item("손쉬운 사용 권한 설정 열기…", #selector(openAccessibilitySettings), symbol: nil))
+        }
+        submenu.addItem(.separator())
+        submenu.addItem(info("Mac 관리: \(BTNIntegration.shared.statusSummary)"))
         submenu.addItem(.separator())
         submenu.addItem(info("업데이트: \(updater.lastCheckResult ?? updater.statusDescription)"))
         let auto = item("자동 업데이트", #selector(toggleAutomaticUpdates), symbol: nil)
@@ -317,6 +350,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         MailWindowCoordinator.shared.showSettings(section: .browser)
     }
 
+    @objc private func showInputSettings() {
+        MailWindowCoordinator.shared.showSettings(section: .input)
+    }
+
+    @objc private func showMacManagement() {
+        BTNIntegration.shared.showDetailWindow()
+    }
+
+    @objc private func showMacManagementSettings() {
+        MailWindowCoordinator.shared.showSettings(section: .macManagement)
+    }
+
+    @objc private func toggleInputMateEnabled() {
+        InputMateCoordinator.shared.toggleEnabled()
+    }
+
+    @objc private func openAccessibilitySettings() {
+        InputMateCoordinator.shared.appState.requestAccessibilityAndRetry()
+    }
+
     /// ⌘W: 메일·설정·AI 브라우저 창이 앞에 있으면 그 창을 닫고, 아니면 화면 번역 창을 숨긴다.
     @objc private func closeFrontWindow() {
         if let key = NSApp.keyWindow, key !== overlay.panel, key.styleMask.contains(.closable) {
@@ -350,14 +403,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let appMenuItem = NSMenuItem()
         let appMenu = NSMenu()
-        appMenu.addItem(item("바로보기 정보", #selector(showAbout)))
+        appMenu.addItem(item("HTT 정보", #selector(showAbout)))
         appMenu.addItem(item("업데이트 확인…", #selector(checkForUpdates)))
         appMenu.addItem(.separator())
+        appMenu.addItem(item("Mac 관리…", #selector(showMacManagement)))
         let settings = NSMenuItem(title: "설정…", action: #selector(showSettings), keyEquivalent: ",")
         settings.target = self
         appMenu.addItem(settings)
+        let inputSettings = NSMenuItem(title: "입력 설정…", action: #selector(showInputSettings), keyEquivalent: "")
+        inputSettings.target = self
+        appMenu.addItem(inputSettings)
+        let macSettings = NSMenuItem(title: "Mac 관리 설정…", action: #selector(showMacManagementSettings), keyEquivalent: "")
+        macSettings.target = self
+        appMenu.addItem(macSettings)
         appMenu.addItem(.separator())
-        appMenu.addItem(NSMenuItem(title: "바로보기 종료", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        appMenu.addItem(NSMenuItem(title: "HTT 종료", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         appMenuItem.submenu = appMenu
         mainMenu.addItem(appMenuItem)
 
