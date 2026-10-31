@@ -1,0 +1,230 @@
+{
+  "schemaVersion": 1,
+  "packId": "dimension",
+  "name": {
+    "ko": "입체",
+    "en": "Dimension"
+  },
+  "version": "1.0.0",
+  "status": "approved",
+  "iconCount": 8,
+  "format": {
+    "pngSizes": [
+      256,
+      512
+    ],
+    "transparent": true,
+    "note": "512 PNGs are Lanczos upscales of the approved native 256 PNGs, not additional source detail."
+  },
+  "icons": [
+    {
+      "id": "home",
+      "label": {
+        "ko": "홈",
+        "en": "Home"
+      },
+      "group": "탐색·보관",
+      "aliases": {
+        "apple": [
+          "house",
+          "house.fill"
+        ],
+        "android": [
+          "Home"
+        ]
+      },
+      "files": {
+        "png256": "png/256/home.png",
+        "png512": "png/512/home.png"
+      },
+      "nativeSourcePixels": 256,
+      "sha256": {
+        "png256": "090e79bbdadf411d25c1a7c145ad15f00e92b22cae90d7b73f6938913da5c08b",
+        "png512": "bce69af714140d3c13d3072f169270bcd4190eb212a6c11cbcc429c425b07584"
+      }
+    },
+    {
+      "id": "browser",
+      "label": {
+        "ko": "브라우저",
+        "en": "Browser"
+      },
+      "group": "탐색·보관",
+      "aliases": {
+        "apple": [
+          "globe"
+        ],
+        "android": [
+          "Language",
+          "Public"
+        ]
+      },
+      "files": {
+        "png256": "png/256/browser.png",
+        "png512": "png/512/browser.png"
+      },
+      "nativeSourcePixels": 256,
+      "sha256": {
+        "png256": "d729f38b11cc282c1f878ee35e83f783d5cee43e9c0ed18c21969b9a28f0aac5",
+        "png512": "8ab3bba505304d86f506caf69491f2b06ed76ce201cd542536a9ef16a07b96a3"
+      }
+    },
+    {
+      "id": "settings",
+      "label": {
+        "ko": "설정",
+        "en": "Settings"
+      },
+      "group": "설정·상태",
+      "aliases": {
+        "apple": [
+          "gearshape"
+        ],
+        "android": [
+          "Settings"
+        ]
+      },
+      "files": {
+        "png256": "png/256/settings.png",
+        "png512": "png/512/settings.png"
+      },
+      "nativeSourcePixels": 256,
+      "sha256": {
+        "png256": "4741ab10b8a4789c3f0468dcb1b175b9ac83a296a5bd6a34bdfb87416543e519",
+        "png512": "10bc169b3cd16210111d1f8f8d4ca028d5abfe4259ce36a66c59be22a6c0b1f9"
+      }
+    },
+    {
+      "id": "device_files",
+      "label": {
+        "ko": "기기 파일",
+        "en": "Device Files"
+      },
+      "group": "탐색·보관",
+      "aliases": {
+        "apple": [
+          "internaldrive",
+          "internaldrive.fill",
+          "externaldrive",
+          "externaldrive.fill"
+        ],
+        "android": [
+          "Storage",
+          "SdCard"
+        ]
+      },
+      "files": {
+        "png256": "png/256/device_files.png",
+        "png512": "png/512/device_files.png"
+      },
+      "nativeSourcePixels": 256,
+      "sha256": {
+        "png256": "38b784bf2a1e0a7028d73c7ceb30bcc37373fde78b1f287df03e99f868ddd427",
+        "png512": "09f8a1b1d6f4e605d31dfdcfc7be303517d8540f889df7be85778acb3bae4bc9"
+      }
+    },
+    {
+      "id": "edit",
+      "label": {
+        "ko": "편집",
+        "en": "Edit"
+      },
+      "group": "파일·조작",
+      "aliases": {
+        "apple": [
+          "pencil",
+          "square.and.pencil"
+        ],
+        "android": [
+          "Edit"
+        ]
+      },
+      "files": {
+        "png256": "png/256/edit.png",
+        "png512": "png/512/edit.png"
+      },
+      "nativeSourcePixels": 256,
+      "sha256": {
+        "png256": "7fe61087f4b3a034f25303c8afae97a2d75e610b5fb45390742c1b17a1c5895c",
+        "png512": "464ca48b8d54295743e1ec33b9f81364193541bac16bf4d101ca7d63ce1dd656"
+      }
+    },
+    {
+      "id": "help",
+      "label": {
+        "ko": "도움말",
+        "en": "Help"
+      },
+      "group": "설정·상태",
+      "aliases": {
+        "apple": [
+          "questionmark.circle"
+        ],
+        "android": [
+          " "
+        ]
+      },
+      "files": {
+        "png256": "png/256/help.png",
+        "png512": "png/512/help.png"
+      },
+      "nativeSourcePixels": 256,
+      "sha256": {
+        "png256": "fd06ed37bac516e3597ec22a0ddf79b2a08325095a4dd7f2f182c47017307bfc",
+        "png512": "3cbffec206b8355cde249535e19f9ae9b9b38ddb71bd5d2d24244e93cc560fa7"
+      }
+    },
+    {
+      "id": "shield",
+      "label": {
+        "ko": "보안",
+        "en": "Shield"
+      },
+      "group": "설정·상태",
+      "aliases": {
+        "apple": [
+          "shield"
+        ],
+        "android": [
+          " "
+        ]
+      },
+      "files": {
+        "png256": "png/256/shield.png",
+        "png512": "png/512/shield.png"
+      },
+      "nativeSourcePixels": 256,
+      "sha256": {
+        "png256": "5f20dd8dbb554e029b7580bf684ed7ab89831806a5a88ef823b79160047f0607",
+        "png512": "994c6a8de78c7059a3d70b812a7cec250c38e8305faafc6504cee34ae0764135"
+      }
+    },
+    {
+      "id": "theme",
+      "label": {
+        "ko": "테마",
+        "en": "Theme"
+      },
+      "group": "설정·상태",
+      "aliases": {
+        "apple": [
+          "paintpalette"
+        ],
+        "android": [
+          "Palette"
+        ]
+      },
+      "files": {
+        "png256": "png/256/theme.png",
+        "png512": "png/512/theme.png"
+      },
+      "nativeSourcePixels": 256,
+      "sha256": {
+        "png256": "4bd351f9bd171bcfb40c4ab442ddb7060c454c01183faf3caf2a87be00df05e9",
+        "png512": "1f6e26e5c2ab5ea9c25c9a94564d334591e9706d480cddb2f118c7423305fc1a"
+      }
+    }
+  ],
+  "sourceManifestSha256": "24266f7da261bd73d15f21ef05384774ef1bf57057cce6be675c132fb78455df",
+  "subsetNote": "HTT uses a subset of the approved shared pack; source icons are unchanged."
+}

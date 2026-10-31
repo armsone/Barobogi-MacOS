@@ -18,7 +18,21 @@
 
   const RUNTIME = {};
   let submitDispatched = false;
+  // One-way per page: provider generation (existing stopButton selectors) was seen before our own
+  // dispatch, so the visible user may have sent this task. Never rewrite or click afterwards, also
+  // after the stop indicator disappears; the caller's existing not-dispatched timeout/takeover applies.
+  let generationObserved = false;
   let lastInjectedPrompt = '';
+  // Successful prompt writes on this page; bounds the pre-dispatch hydration refill.
+  let promptFillCount = 0;
+  const MAX_PROMPT_FILLS_BEFORE_SEND = 3;
+  // Gemini first-send readiness (iPhone traces 2026-10-31): clicks 26/96 ms after the fill left the
+  // provider generating with no answer, later clicks completed. Inference only, not a proven cause.
+  // Require the same live editor, unique enabled send button, raw text and attachment count on
+  // consecutive submit polls. No timer is added; callers keep their existing poll cadence.
+  const GEMINI_SEND_STABLE_SAMPLES = 3;
+  const GEMINI_SEND_STABLE_MS = 900;
+  let sendReadiness = null;
   let diagnosticSequence = 0;
   let lastSnapshot = '';
   const diagnosticEvents = [];
@@ -743,6 +757,43 @@
    * Dispatches synthetic events and handles native prototype setters without overwriting
    * unprompted user text unless forced.
    */
+  const normalizePromptText = value => String(value || '').replace(/\s+/g, ' ').trim();
+
+  function quillParagraphs(text) {
+    return String(text).split(/\r\n|\r|\n/).map(line => {
+      const paragraph = document.createElement('p');
+      if (line) paragraph.textContent = line;
+      else paragraph.appendChild(document.createElement('br'));
+      return paragraph;
+    });
+  }
+
+  function isQuillEditor(el) {
+    return !!(el && el.isContentEditable && el.classList && el.classList.contains('ql-editor'));
+  }
+
+  // Gemini's composer is Quill. Device evidence shows only a normalized mismatch after hydration;
+  // Quill <br> cleanup and a Trusted Types insertHTML exception are unconfirmed hypotheses.
+  // Type with the native editing command first, then rebuild Quill paragraphs through DOM APIs
+  // (no HTML string sink). Success requires the complete normalized contents to match.
+  function writeQuillEditor(el, text) {
+    el.focus();
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    let typed = false;
+    try { typed = document.execCommand('insertText', false, text); } catch (_) { typed = false; }
+    if (!typed || normalizePromptText(el.innerText) !== normalizePromptText(text)) {
+      el.replaceChildren(...quillParagraphs(text));
+      el.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: text }));
+    }
+    if (normalizePromptText(el.innerText) !== normalizePromptText(text)) return false;
+    el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+    return true;
+  }
+
   RUNTIME.injectPrompt = function (config, promptText, force) {
     try {
       if (submitDispatched) return JSON.stringify({success: false, code: 'SUBMISSION_PENDING', error: 'A request has already been dispatched.'});
@@ -769,10 +820,20 @@
         });
       }
 
+      sendReadiness = null;
       inputEl.focus();
 
-      if (isContentEditable) {
-        // ContentEditable (e.g. Claude ProseMirror, Gemini Quill, ChatGPT rich input)
+      if (isQuillEditor(inputEl)) {
+        if (!writeQuillEditor(inputEl, promptText)) {
+          emitDiagnostic('prompt_failed', {prompt_present: 0});
+          return JSON.stringify({
+            success: false,
+            code: 'PROMPT_MISMATCH',
+            error: 'The editor contents did not match the prompt after insertion.',
+          });
+        }
+      } else if (isContentEditable) {
+        // ContentEditable (e.g. Claude ProseMirror, ChatGPT rich input)
         // Select all existing content
         const selection = window.getSelection();
         const range = document.createRange();
@@ -825,7 +886,8 @@
       }
 
       lastInjectedPrompt = promptText;
-      emitDiagnostic('prompt_inserted', {prompt_length: promptText.length});
+      promptFillCount += 1;
+      emitDiagnostic('prompt_inserted', {prompt_length: promptText.length, attempt: Math.min(1000, promptFillCount)});
       return JSON.stringify({
         success: true,
         data: {
@@ -895,19 +957,80 @@
    * 4. One-shot submission. Readiness can be polled, but a dispatched request is
    * observed only: clicking the same DOM node again could now press Stop.
    */
+  // Visible, non-excluded semantic send candidates across every selector in the composer root.
+  function sendCandidateCount(config) {
+    const root = composerRoot(config);
+    const selectors = config && config.selectors && config.selectors.submitButton;
+    if (!root || !selectors) return 0;
+    const found = [];
+    for (const selector of (Array.isArray(selectors) ? selectors : [selectors])) {
+      try {
+        for (const btn of root.querySelectorAll(selector)) {
+          const meaning = `${btn.getAttribute('aria-label') || ''} ${btn.getAttribute('data-testid') || ''} ${btn.getAttribute('title') || ''}`.toLowerCase();
+          if (found.includes(btn) || !isVisible(btn) || /stop|중지|정지|중단|voice|음성|dictat|받아쓰기/.test(meaning)) continue;
+          found.push(btn);
+        }
+      } catch (_) {}
+    }
+    return found.length;
+  }
+
   RUNTIME.submitPrompt = function (config, attemptNumber) {
     try {
       if (submitDispatched) return JSON.stringify({success: true, data: {attempted: true, pending: true}});
+      const notReady = JSON.stringify({success: false, code: 'SEND_NOT_READY', error: 'The current composer is not ready to send.'});
+      const isGemini = config && config.id === 'gemini';
+      const previousReadiness = sendReadiness;
+      sendReadiness = null;
       const submitBtn = sendButton(config);
       const inputEl = queryFirst(config.selectors.promptInput);
-      const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
+      const normalize = normalizePromptText;
       const current = inputEl ? normalize(inputEl.value || inputEl.innerText || inputEl.textContent) : '';
+      // Visible provider generation (existing stop selectors) may be a user's own send from the visible
+      // browser: never rewrite or click, now or later on this page; readiness was already reset above.
+      if (generationObserved || generationVisible(config)) {
+        generationObserved = true;
+        return notReady;
+      }
+      // Bounded pre-dispatch recovery: the loaded Gemini editor no longer holds the inserted prompt
+      // (replaced during hydration). Rewrite the same prompt at most until MAX writes; never after dispatch.
+      if (isGemini && isQuillEditor(inputEl) && document.readyState === 'complete' && lastInjectedPrompt &&
+          current !== normalize(lastInjectedPrompt) && promptFillCount >= 1 && promptFillCount < MAX_PROMPT_FILLS_BEFORE_SEND) {
+        emitDiagnostic('send_blocked', {prompt_present: 0, attempt: promptFillCount});
+        if (writeQuillEditor(inputEl, lastInjectedPrompt)) {
+          promptFillCount += 1;
+          emitDiagnostic('prompt_inserted', {prompt_length: lastInjectedPrompt.length, attempt: promptFillCount});
+        } else {
+          promptFillCount = MAX_PROMPT_FILLS_BEFORE_SEND;
+          emitDiagnostic('prompt_failed', {prompt_present: 0});
+        }
+        return notReady;
+      }
       if (!inputEl || !submitBtn || submitBtn.disabled || submitBtn.getAttribute('aria-disabled') === 'true' ||
           generationVisible(config) || !current || current !== normalize(lastInjectedPrompt)) {
-        return JSON.stringify({success: false, code: 'SEND_NOT_READY', error: 'The current composer is not ready to send.'});
+        return notReady;
+      }
+      let stableSamples = 0;
+      if (isGemini) {
+        if (document.readyState !== 'complete' || sendCandidateCount(config) > 1) return notReady;
+        const isTextField = inputEl.tagName === 'TEXTAREA' || inputEl.tagName === 'INPUT';
+        const editorLive = inputEl.isConnected && submitBtn.isConnected &&
+          (isTextField ? !inputEl.disabled && !inputEl.readOnly : inputEl.isContentEditable);
+        if (!editorLive) return notReady;
+        const raw = String(inputEl.value || inputEl.innerText || inputEl.textContent || '');
+        const attachments = attachmentCount(config);
+        const now = Date.now();
+        const unchanged = !!previousReadiness && previousReadiness.editor === inputEl &&
+          previousReadiness.button === submitBtn && previousReadiness.raw === raw && previousReadiness.attachments === attachments;
+        sendReadiness = unchanged
+          ? {editor: inputEl, button: submitBtn, raw, attachments, since: previousReadiness.since, samples: previousReadiness.samples + 1}
+          : {editor: inputEl, button: submitBtn, raw, attachments, since: now, samples: 1};
+        if (sendReadiness.samples < GEMINI_SEND_STABLE_SAMPLES || now - sendReadiness.since < GEMINI_SEND_STABLE_MS) return notReady;
+        stableSamples = Math.min(1000, sendReadiness.samples);
       }
       submitDispatched = true;
-      emitDiagnostic('send_attempted', {attempt: 1});
+      sendReadiness = null;
+      emitDiagnostic('send_attempted', isGemini ? {attempt: 1, stable_samples: stableSamples} : {attempt: 1});
       submitBtn.click();
       return JSON.stringify({success: true, data: {modality: 'BUTTON_CLICK', attempt: 1, attempted: true, pending: true}});
     } catch (err) {

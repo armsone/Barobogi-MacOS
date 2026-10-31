@@ -55,8 +55,7 @@ struct BrowserSetupView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 520)
-        .frame(minHeight: 560)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
             integration.refreshRegistrations()
             integration.refreshSafariState()

@@ -1,0 +1,304 @@
+{
+  "schemaVersion": 1,
+  "packId": "simple",
+  "name": {
+    "ko": "심플",
+    "en": "Simple"
+  },
+  "version": "1.0.0",
+  "status": "approved",
+  "iconCount": 8,
+  "format": {
+    "svgViewBox": [
+      0,
+      0,
+      512,
+      512
+    ],
+    "pngSizes": [
+      256,
+      512
+    ],
+    "transparent": true
+  },
+  "design": {
+    "stroke": 28,
+    "cap": "round",
+    "join": "round",
+    "ink": "currentColor",
+    "colorMode": "single-color adaptive template",
+    "accent": null,
+    "sourcePreservation": {
+      "originalCount": 24,
+      "extensionCount": 112,
+      "nasVariant": "existing square three-bay NAS",
+      "originalSVGFormat": "embedded-raster-alpha-mask"
+    }
+  },
+  "icons": [
+    {
+      "id": "home",
+      "label": {
+        "ko": "홈",
+        "en": "Home"
+      },
+      "group": "탐색·보관",
+      "aliases": {
+        "apple": [
+          "house",
+          "house.fill"
+        ],
+        "android": [
+          "Home"
+        ]
+      },
+      "files": {
+        "svg": "svg/home.svg",
+        "png256": "png/256/home.png",
+        "png512": "png/512/home.png",
+        "png256White": "png-white/256/home.png",
+        "png512White": "png-white/512/home.png"
+      },
+      "sha256": {
+        "svg": "8089d3068bc12c6e4e24f252d2be7e3d9b3ccbb654278ee9878a935333302054",
+        "png256": "5d04765ea22d10d0c6abc65fbd20642d42b7f93df268f51889662d1b069f2897",
+        "png512": "277cb926a3d16b68eb24dfed061fb5fc581ea5db5fc59df8b8e24ef2f7a64396",
+        "png256White": "36cc93045dd11e84144ae332465e22c76e766f454a679b0550fab8252dfbf6b1",
+        "png512White": "f2e97b7886c95203ea9886bac81001422f1b97069f010fb5aaf4448c99e3b616"
+      },
+      "sourceType": "existing-original-alpha-preserved",
+      "sourceNote": "Original 512px alpha geometry is preserved. The SVG is an adaptive-color wrapper with an embedded raster alpha mask, not a newly traced vector."
+    },
+    {
+      "id": "browser",
+      "label": {
+        "ko": "브라우저",
+        "en": "Browser"
+      },
+      "group": "탐색·보관",
+      "aliases": {
+        "apple": [
+          "globe"
+        ],
+        "android": [
+          "Language",
+          "Public"
+        ]
+      },
+      "files": {
+        "svg": "svg/browser.svg",
+        "png256": "png/256/browser.png",
+        "png512": "png/512/browser.png",
+        "png256White": "png-white/256/browser.png",
+        "png512White": "png-white/512/browser.png"
+      },
+      "sha256": {
+        "svg": "57d3eded909939df113f1f4360bc8ac2662f4940c711dfa7d504bd7d88512722",
+        "png256": "e2c1c51d876405dc01bf986d4fc2beae441834abc62800523ac4d1ef3626de6a",
+        "png512": "aef0fbf2f9d99eb8e461632795dbf6d1b2104ed494de676f55d3e70d22e7bec1",
+        "png256White": "084a9dfd3ffeef7e48fc321204a3fbed865486900cbbe525583da21b6b9751a7",
+        "png512White": "b86b0f497e1acdaf414a389068779a9e55fd88aafe4282add6ac761b29d990cc"
+      },
+      "sourceType": "existing-original-alpha-preserved",
+      "sourceNote": "Original 512px alpha geometry is preserved. The SVG is an adaptive-color wrapper with an embedded raster alpha mask, not a newly traced vector."
+    },
+    {
+      "id": "settings",
+      "label": {
+        "ko": "설정",
+        "en": "Settings"
+      },
+      "group": "설정·상태",
+      "aliases": {
+        "apple": [
+          "gearshape"
+        ],
+        "android": [
+          "Settings"
+        ]
+      },
+      "files": {
+        "svg": "svg/settings.svg",
+        "png256": "png/256/settings.png",
+        "png512": "png/512/settings.png",
+        "png256White": "png-white/256/settings.png",
+        "png512White": "png-white/512/settings.png"
+      },
+      "sha256": {
+        "svg": "5dc79aa16382e25202ae5658a40555f78db344745e4d57ac8643d77af01034ad",
+        "png256": "94c9c49ed06293fa89fe292de6b40f08e0380618926566ff6ba184a5eaf77988",
+        "png512": "b26c0165fad57854ca102f140a6bdf86edc929cfd62bd67bedadd1aaae720dec",
+        "png256White": "ca6fb35ab3ba9505c7aae15352c0b355bcf685a34d0e9cdc376f6f210c024fb1",
+        "png512White": "e304f1276487d7e5e1ef96450354a2ff82ddcbba5eb9fa4cbe8eec0d6efa3f68"
+      },
+      "sourceType": "existing-original-alpha-preserved",
+      "sourceNote": "Original 512px alpha geometry is preserved. The SVG is an adaptive-color wrapper with an embedded raster alpha mask, not a newly traced vector."
+    },
+    {
+      "id": "device_files",
+      "label": {
+        "ko": "기기 파일",
+        "en": "Device Files"
+      },
+      "group": "탐색·보관",
+      "aliases": {
+        "apple": [
+          "internaldrive",
+          "internaldrive.fill",
+          "externaldrive",
+          "externaldrive.fill"
+        ],
+        "android": [
+          "Storage",
+          "SdCard"
+        ]
+      },
+      "files": {
+        "svg": "svg/device_files.svg",
+        "png256": "png/256/device_files.png",
+        "png512": "png/512/device_files.png",
+        "png256White": "png-white/256/device_files.png",
+        "png512White": "png-white/512/device_files.png"
+      },
+      "sha256": {
+        "svg": "ce7f9cd8aa29815d90ed54875517593731c9e1b07f04ad3d3b3c0f4d6213394b",
+        "png256": "b56c6743389f356e3ccb3ef33982c13cbfea5c9d1611bd1215f1ba124166ac44",
+        "png512": "d68fe3db28b1defc6096ef06d7df1a65d2029127a66215557c5f3638b8129d2f",
+        "png256White": "b5d0ee64b0e8f75522a5f27dad1c5aac1751925adb452a94d6980e586b5d5206",
+        "png512White": "8d1a3b70daeba4bf9fff22a59df1b063ea49a0c9f8cb26780ceffb1df6fd0ac6"
+      },
+      "sourceType": "existing-original-alpha-preserved",
+      "sourceNote": "Original 512px alpha geometry is preserved. The SVG is an adaptive-color wrapper with an embedded raster alpha mask, not a newly traced vector."
+    },
+    {
+      "id": "edit",
+      "label": {
+        "ko": "편집",
+        "en": "Edit"
+      },
+      "group": "파일·조작",
+      "aliases": {
+        "apple": [
+          "pencil",
+          "square.and.pencil"
+        ],
+        "android": [
+          "Edit"
+        ]
+      },
+      "files": {
+        "svg": "svg/edit.svg",
+        "png256": "png/256/edit.png",
+        "png512": "png/512/edit.png",
+        "png256White": "png-white/256/edit.png",
+        "png512White": "png-white/512/edit.png"
+      },
+      "sha256": {
+        "svg": "e64b32df3733e04b7755748b6cee4df5d10680650722800136bafa73adba819d",
+        "png256": "6657a7b155342a068a23761dd08dc38d33dbf5f6ba132082ce054fc40e10a751",
+        "png512": "8f36b6a30c2514168ab68ee33c3f5cc6ddd0f0370df9e869ea0f0ab18d7da965",
+        "png256White": "e15f7b643821b8e2a1ac5d355e753a261f2ec22e34b6e25ce8ce49b16a91fe35",
+        "png512White": "a9a5bd2933d4a1f8da4c151faa53310a6de84f7c31b454b6b5a9d1a980d75f60"
+      },
+      "sourceType": "existing-original-alpha-preserved",
+      "sourceNote": "Original 512px alpha geometry is preserved. The SVG is an adaptive-color wrapper with an embedded raster alpha mask, not a newly traced vector."
+    },
+    {
+      "id": "help",
+      "label": {
+        "ko": "도움말",
+        "en": "Help"
+      },
+      "group": "설정·상태",
+      "aliases": {
+        "apple": [
+          "questionmark.circle"
+        ],
+        "android": [
+          " "
+        ]
+      },
+      "files": {
+        "svg": "svg/help.svg",
+        "png256": "png/256/help.png",
+        "png512": "png/512/help.png",
+        "png256White": "png-white/256/help.png",
+        "png512White": "png-white/512/help.png"
+      },
+      "sha256": {
+        "svg": "f42b472a2b06b8a1bb24d4d70e99f50561eb6c187f8da99eeefe735ea6df4ba4",
+        "png256": "54611ddf9073e93fc0337e8a4e1de8276b0dad8cfb2505852260b0fd0be4726c",
+        "png512": "faf5950b3dee153a82aaf4c08c7f5a62e35505bffd0e9235899587fea92ef16d",
+        "png256White": "b198042a33cf5f1bb23a5d03220de84b6e002e66d0d82ef74a645892dfad3b8e",
+        "png512White": "fd79d3d75cedf8bd5d8f863c845aefd2f70bfc94ee1b1a428a976b078e982bdc"
+      },
+      "sourceType": "new-svg-extension"
+    },
+    {
+      "id": "shield",
+      "label": {
+        "ko": "보안",
+        "en": "Shield"
+      },
+      "group": "설정·상태",
+      "aliases": {
+        "apple": [
+          "shield"
+        ],
+        "android": [
+          " "
+        ]
+      },
+      "files": {
+        "svg": "svg/shield.svg",
+        "png256": "png/256/shield.png",
+        "png512": "png/512/shield.png",
+        "png256White": "png-white/256/shield.png",
+        "png512White": "png-white/512/shield.png"
+      },
+      "sha256": {
+        "svg": "755ae6e01e8e9b6abe534540cdcd41222300a92bf47f2fb2c89b7037619a2434",
+        "png256": "8514210b5c38e98e461f1628b25915eb6f7aaa5446835892ba2c41f57d3fb98b",
+        "png512": "bf7c5fd91439fb5dbe454b51ef44f24de0b4245a0418063c3328511a0574cdb7",
+        "png256White": "1dc5c8b5934d6cfad956169fd7ba3a6f710980605c3c65675ac053d8994f07c1",
+        "png512White": "3c2d5c856106ba1b1240e0096c6cda7baf66f335837b372290aec6d90592cd96"
+      },
+      "sourceType": "new-svg-extension"
+    },
+    {
+      "id": "theme",
+      "label": {
+        "ko": "테마",
+        "en": "Theme"
+      },
+      "group": "설정·상태",
+      "aliases": {
+        "apple": [
+          "paintpalette"
+        ],
+        "android": [
+          "Palette"
+        ]
+      },
+      "files": {
+        "svg": "svg/theme.svg",
+        "png256": "png/256/theme.png",
+        "png512": "png/512/theme.png",
+        "png256White": "png-white/256/theme.png",
+        "png512White": "png-white/512/theme.png"
+      },
+      "sha256": {
+        "svg": "0526ac3b91d90cc4143fa18951a67938aadc09240f765250f7ad823c108c9f57",
+        "png256": "f1c8d1683613afea69209ef0c0ba61df6a9ee7744902aa1e7e31359a4ab30b85",
+        "png512": "be4887df9cb49bae052d01bbb05150f0c8b993291b5c3862ca4ad52dc8004e4c",
+        "png256White": "716145d64a799d3c521102e2cd3f775d0066f7555b3c36e94b0f4c1b0cfaca4b",
+        "png512White": "a0e70c99171fefc0f91ab365b1a0bc087cd46c4d00329196bd45a808feb2cf6f"
+      },
+      "sourceType": "new-svg-extension"
+    }
+  ],
+  "productionReady": true,
+  "approvalBasis": "User approved the current-app-style comparison and explicitly requested application and reusable-pack handoff. Existing 24 alpha shapes are preserved; 112 semantic extensions complete coverage.",
+  "sourceManifestSha256": "c45f287e6f90ec8b3fabe9769be3a3fee4c52d1b584e94629bafc364cd245e09",
+  "subsetNote": "HTT uses a subset of the approved shared pack; source icons are unchanged."
+}

@@ -11,14 +11,16 @@ public struct BTNSettingsView: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            statusHeaderBox
-            statusCalloutBox
-            togglesBox
-            actionsRow
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                statusHeaderBox
+                statusCalloutBox
+                togglesBox
+                actionsRow
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var statusHeaderBox: some View {

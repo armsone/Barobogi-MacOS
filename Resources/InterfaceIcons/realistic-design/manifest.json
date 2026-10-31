@@ -1,0 +1,264 @@
+{
+  "schemaVersion": 1,
+  "packId": "realistic",
+  "name": {
+    "ko": "리얼",
+    "en": "Real"
+  },
+  "version": "1.0.0",
+  "status": "approved",
+  "productionReady": true,
+  "iconCount": 8,
+  "format": {
+    "pngSizes": [
+      256,
+      512
+    ],
+    "transparent": true,
+    "note": "Direct extraction from transparent RGBA source; source white/metal colors are not keyed out. Source cell size is recorded per icon; 512 PNGs may be upscales."
+  },
+  "icons": [
+    {
+      "id": "home",
+      "label": {
+        "ko": "홈",
+        "en": "Home"
+      },
+      "group": "탐색·보관",
+      "aliases": {
+        "apple": [
+          "house",
+          "house.fill"
+        ],
+        "android": [
+          "Home"
+        ]
+      },
+      "files": {
+        "png256": "png/256/home.png",
+        "png512": "png/512/home.png"
+      },
+      "sourceType": "transparent-sheet-component",
+      "nativeSourcePixels": [
+        194,
+        192
+      ],
+      "sha256": {
+        "png256": "dffa2aa5489565397a8efec99de85646974024c39e54f9a82499c3c2949d815f",
+        "png512": "4d9b0ef9679f04f909f8e3dc940c7e0e91b39a2543c8d796d21e611b8073f1e1"
+      }
+    },
+    {
+      "id": "browser",
+      "label": {
+        "ko": "브라우저",
+        "en": "Browser"
+      },
+      "group": "탐색·보관",
+      "aliases": {
+        "apple": [
+          "globe"
+        ],
+        "android": [
+          "Language",
+          "Public"
+        ]
+      },
+      "files": {
+        "png256": "png/256/browser.png",
+        "png512": "png/512/browser.png"
+      },
+      "sourceType": "transparent-sheet-component",
+      "nativeSourcePixels": [
+        173,
+        176
+      ],
+      "sha256": {
+        "png256": "d2bda94a3de50b6a5d236eeaa18d6f9f8b6351e2be9c887960238bc03d90d654",
+        "png512": "78d255f9d44d36e0f62a938c3df2ec622c33cb5e080a13bef287c2306fa677c6"
+      }
+    },
+    {
+      "id": "settings",
+      "label": {
+        "ko": "설정",
+        "en": "Settings"
+      },
+      "group": "설정·상태",
+      "aliases": {
+        "apple": [
+          "gearshape"
+        ],
+        "android": [
+          "Settings"
+        ]
+      },
+      "files": {
+        "png256": "png/256/settings.png",
+        "png512": "png/512/settings.png"
+      },
+      "sourceType": "transparent-sheet-component",
+      "nativeSourcePixels": [
+        172,
+        169
+      ],
+      "sha256": {
+        "png256": "305c77e60ea6668607db6a2de2799d7f39e2ec0d98070d6cbfccd6e68bb7b314",
+        "png512": "dafe76b224c4d8cf8c828b33a0ac1e901b421d5f68b0b85f9dba04414a7928fd"
+      }
+    },
+    {
+      "id": "device_files",
+      "label": {
+        "ko": "기기 파일",
+        "en": "Device Files"
+      },
+      "group": "탐색·보관",
+      "aliases": {
+        "apple": [
+          "internaldrive",
+          "internaldrive.fill",
+          "externaldrive",
+          "externaldrive.fill"
+        ],
+        "android": [
+          "Storage",
+          "SdCard"
+        ]
+      },
+      "files": {
+        "png256": "png/256/device_files.png",
+        "png512": "png/512/device_files.png"
+      },
+      "sourceType": "transparent-sheet-component",
+      "nativeSourcePixels": [
+        176,
+        159
+      ],
+      "sha256": {
+        "png256": "4d1d02a2e83420f9856c85090aa99faa29001f39011302ce66d4b6c23d7bbbad",
+        "png512": "9bd8f56ea8be3f49dd5b85c64b156201972a4dc6473d2fa8ef5c20eb89d9ec8b"
+      }
+    },
+    {
+      "id": "edit",
+      "label": {
+        "ko": "편집",
+        "en": "Edit"
+      },
+      "group": "파일·조작",
+      "aliases": {
+        "apple": [
+          "pencil",
+          "square.and.pencil"
+        ],
+        "android": [
+          "Edit"
+        ]
+      },
+      "files": {
+        "png256": "png/256/edit.png",
+        "png512": "png/512/edit.png"
+      },
+      "sourceType": "transparent-sheet-component",
+      "nativeSourcePixels": [
+        163,
+        164
+      ],
+      "sha256": {
+        "png256": "ee87b9d8c9961d64f679c700972866401022fdd41ef42111ad94d1aaa8fdae9d",
+        "png512": "f302fc90e9cb4cc6f7fd2965324e58e4160ec91c4658d6bba867d434bb6a1975"
+      }
+    },
+    {
+      "id": "help",
+      "label": {
+        "ko": "도움말",
+        "en": "Help"
+      },
+      "group": "설정·상태",
+      "aliases": {
+        "apple": [
+          "questionmark.circle"
+        ],
+        "android": [
+          " "
+        ]
+      },
+      "files": {
+        "png256": "png/256/help.png",
+        "png512": "png/512/help.png"
+      },
+      "sourceType": "transparent-sheet-component",
+      "nativeSourcePixels": [
+        164,
+        152
+      ],
+      "sha256": {
+        "png256": "b2338fcf521d458c7bdc4c21d0f7e4296f11071e878d6ff187f4024fe44dfc88",
+        "png512": "06e739c7bec796c5123b0e64fbd3b091adf9b4f9b20fe9618845d0d329a78606"
+      }
+    },
+    {
+      "id": "shield",
+      "label": {
+        "ko": "보안",
+        "en": "Shield"
+      },
+      "group": "설정·상태",
+      "aliases": {
+        "apple": [
+          "shield"
+        ],
+        "android": [
+          " "
+        ]
+      },
+      "files": {
+        "png256": "png/256/shield.png",
+        "png512": "png/512/shield.png"
+      },
+      "sourceType": "transparent-sheet-component",
+      "nativeSourcePixels": [
+        154,
+        170
+      ],
+      "sha256": {
+        "png256": "af46bbad9404af0c744f2849491601ab4846b6f2cc1daca0cf1743d5b004f3b6",
+        "png512": "f277fe36e3e6597bcba62a3e6bb9a40e6f49d903b8ae8442a6e743a5993e2de5"
+      }
+    },
+    {
+      "id": "theme",
+      "label": {
+        "ko": "테마",
+        "en": "Theme"
+      },
+      "group": "설정·상태",
+      "aliases": {
+        "apple": [
+          "paintpalette"
+        ],
+        "android": [
+          "Palette"
+        ]
+      },
+      "files": {
+        "png256": "png/256/theme.png",
+        "png512": "png/512/theme.png"
+      },
+      "sourceType": "transparent-sheet-component",
+      "nativeSourcePixels": [
+        160,
+        147
+      ],
+      "sha256": {
+        "png256": "228c096562f0270ceff4245f65e0b16a489166190809fa3ed1f75c9e06d86233",
+        "png512": "4ce0fe419d47f7c4b108b5d399ceb3beb40264f40841571110e1e4601dbabc31"
+      }
+    }
+  ],
+  "approvalBasis": "User explicitly requested application of the completed three packs and reusable handoff after the current-app-style comparison.",
+  "sourceManifestSha256": "dfd3d6153bba8a916bf2e728e73a6ead3fa54412eec879b595870d0989dc2693",
+  "subsetNote": "HTT uses a subset of the approved shared pack; source icons are unchanged."
+}

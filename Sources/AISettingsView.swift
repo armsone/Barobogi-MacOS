@@ -17,9 +17,38 @@ struct AISettingsView: View {
     @State private var loginEnabled = false
     @State private var loginStatus = ""
     @State private var loginNeedsApproval = false
+    @ObservedObject private var appearance = HTTAppearanceStore.shared
 
     var body: some View {
         Form {
+            Section {
+                HStack {
+                    Text("테마 (병기스타일)")
+                    Spacer()
+                    Picker("", selection: $appearance.theme) {
+                        ForEach(HTTTheme.allCases) { theme in
+                            Text(theme.displayName).tag(theme)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(width: 170)
+                }
+                HStack {
+                    Text("아이콘 스타일")
+                    Spacer()
+                    Picker("", selection: $appearance.iconStyle) {
+                        ForEach(HTTIconStyle.allCases) { style in
+                            Text(style.displayName).tag(style)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(width: 170)
+                }
+            } header: {
+                Text("화면 스타일")
+            } footer: {
+                Text("색상 테마(자동·라이트·프라이데이·자비스·울트론)와 아이콘 스타일(심플·입체·리얼)을 설정합니다.")
+            }
             Section {
                 Toggle("Dock에 아이콘 표시", isOn: $dockVisibility.showDockIcon)
             } header: {
@@ -175,8 +204,7 @@ struct AISettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 560)
-        .frame(minHeight: 620)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .aibiHiddenSurface()
         .confirmationDialog("외부 AI·웹 번역 세션을 모두 지울까요?", isPresented: $confirmClear) {
             Button("모두 지우기", role: .destructive) {

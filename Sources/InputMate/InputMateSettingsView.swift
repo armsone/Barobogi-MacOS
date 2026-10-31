@@ -36,7 +36,7 @@ struct InputMateSettingsView: View {
                 }
             }
             .padding(16)
-            .frame(minWidth: 700, minHeight: 580)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 

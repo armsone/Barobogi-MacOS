@@ -169,6 +169,10 @@ cp "$ROOT_DIR/Resources/aibi-browser-runtime.js" "$ROOT_DIR/Resources/aibi-provi
 # 화면 번역문 글꼴(고딕/명조/손글씨, 패키지 번들). 앱 실행 중 프로세스 범위로만 등록하며 시스템에 설치하지 않는다.
 mkdir -p "$APP_BUNDLE/Contents/Resources/Fonts"
 cp "$ROOT_DIR/Resources/Fonts"/*.ttf "$ROOT_DIR/Resources/Fonts"/*-OFL.txt "$ROOT_DIR/Resources/Fonts"/*-LICENSE.txt "$APP_BUNDLE/Contents/Resources/Fonts/"
+if [ -d "$ROOT_DIR/Resources/InterfaceIcons" ]; then
+  mkdir -p "$APP_BUNDLE/Contents/Resources/InterfaceIcons"
+  cp -R "$ROOT_DIR/Resources/InterfaceIcons/"* "$APP_BUNDLE/Contents/Resources/InterfaceIcons/"
+fi
 ditto "$SPARKLE_DIR/Sparkle.framework" "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework"
 
 PLIST="$APP_BUNDLE/Contents/Info.plist"

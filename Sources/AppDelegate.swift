@@ -127,11 +127,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - 창 표시/숨김
 
-    @objc private func showOverlay() {
+    @objc func showOverlay() {
         overlay.show(activate: true)
     }
 
-    @objc private func toggleOverlay() {
+    @objc func toggleOverlay() {
         if overlay.isVisible {
             overlay.hide()
         } else {
@@ -139,7 +139,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    @objc private func hideOverlay() {
+    @objc func hideOverlay() {
         overlay.hide()
     }
 
@@ -170,43 +170,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.removeAllItems()
 
         menu.addItem(headerItem())
+        menu.addItem(item("HTT 홈…", #selector(showHome), symbol: "house"))
         menu.addItem(.separator())
 
+        // MARK: 번역
         let overlayVisible = overlay.isVisible
-        let screenItem = item(overlayVisible ? "화면 번역 창 숨기기" : "화면 번역", #selector(toggleOverlay),
+        let screenItem = item(overlayVisible ? "화면 번역 창 숨기기" : "화면 번역 창 열기", #selector(toggleOverlay),
                                symbol: "text.viewfinder")
         // 전역 단축키는 항상 '보이기'만 수행하므로, 숨기기로 바뀌는 상태에서는 단축키 표기를 붙이지 않는다.
         if !overlayVisible {
             applyKeyEquivalent(screenItem, GlobalHotKey.screenKeyEquivalent, GlobalHotKey.screenModifierMask)
         }
         menu.addItem(screenItem)
-        let primary = item(viewModel.primaryAction.title, #selector(performPrimaryAction), symbol: viewModel.primaryAction.systemImage)
-        primary.isEnabled = !viewModel.isProcessing
+
+        let primary: NSMenuItem
+        if viewModel.isExternalRunning {
+            primary = item("외부 AI 번역 취소", #selector(cancelExternalTranslation), symbol: "xmark.circle")
+            primary.isEnabled = true
+        } else if viewModel.isProcessing {
+            primary = item("선택 영역 번역 중…", nil, symbol: "camera.viewfinder")
+            primary.isEnabled = false
+        } else {
+            let title = (viewModel.primaryAction == .showOriginal) ? "원문보기" : "선택 영역 번역"
+            primary = item(title, #selector(performPrimaryAction), symbol: viewModel.primaryAction.systemImage)
+            primary.isEnabled = true
+        }
         menu.addItem(primary)
+
         if viewModel.status != .idle {
             menu.addItem(info(viewModel.status.koreanText))
         }
 
-        menu.addItem(.separator())
-        let mailItem = item("선택한 메일 번역", #selector(translateSelectedMail), symbol: "envelope")
+        let mailItem = item("Mail에서 선택한 메일 번역", #selector(translateSelectedMail), symbol: "envelope")
         applyKeyEquivalent(mailItem, GlobalHotKey.mailKeyEquivalent, GlobalHotKey.mailModifierMask)
         menu.addItem(mailItem)
         menu.addItem(item("메일 번역 창 열기", #selector(showMailWindow), symbol: "envelope.open"))
+        menu.addItem(item("브라우저 번역 설정…", #selector(showBrowserSetup), symbol: "globe"))
 
         menu.addItem(.separator())
+
+        // MARK: 입력 도우미
         let isInputEnabled = InputMateCoordinator.shared.settings.preferences.isEnabled
         let inputToggle = item(
-            isInputEnabled ? "입력 기능 일시정지" : "입력 기능 켜기",
+            isInputEnabled ? "입력 도우미 끄기" : "입력 도우미 켜기",
             #selector(toggleInputMateEnabled),
             symbol: isInputEnabled ? "keyboard" : "pause.circle"
         )
         menu.addItem(inputToggle)
-        menu.addItem(item("Mac 관리…", #selector(showMacManagement), symbol: "cpu"))
-        menu.addItem(item("설정…", #selector(showSettings), symbol: "gearshape"))
-        menu.addItem(item("브라우저 번역…", #selector(showBrowserSetup), symbol: "globe"))
-        menu.addItem(item("입력 설정…", #selector(showInputSettings), symbol: "keyboard.badge.ellipsis"))
+        menu.addItem(item("입력 도우미 설정…", #selector(showInputSettings), symbol: "keyboard.badge.ellipsis"))
+
+        menu.addItem(.separator())
+
+        // MARK: Mac 관리
+        menu.addItem(item("Mac 상태·정리 항목 보기…", #selector(showMacManagement), symbol: "cpu"))
         menu.addItem(item("Mac 관리 설정…", #selector(showMacManagementSettings), symbol: "slider.horizontal.3"))
-        let status = item("앱 상태", nil, symbol: "info.circle")
+
+        menu.addItem(.separator())
+
+        // MARK: 앱 설정·도움말
+        menu.addItem(item("앱 설정…", #selector(showSettings), symbol: "gearshape"))
+        menu.addItem(item("사용 방법…", #selector(showGuide), symbol: "questionmark.circle"))
+        let status = item("권한·연결 상태", nil, symbol: "info.circle")
         status.submenu = statusMenu()
         menu.addItem(status)
 
@@ -214,7 +238,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let warning = actionNeededWarningItem() {
             menu.addItem(warning)
         }
-        menu.addItem(item("HTT 정보", #selector(showAbout), symbol: "questionmark.circle"))
+        menu.addItem(item("HTT 정보", #selector(showAbout), symbol: "info.circle"))
         menu.addItem(item("업데이트 확인…", #selector(checkForUpdates), symbol: "arrow.down.circle"))
         menu.addItem(item("HTT 종료", #selector(NSApplication.terminate(_:)), target: NSApp, symbol: "power"))
     }
@@ -247,7 +271,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard hotKeyFailed || loginNeedsApproval || inputNeedsAccessibility else { return nil }
 
         if inputNeedsAccessibility {
-            let warning = item("입력 기능 손쉬운 사용 권한 필요", #selector(openAccessibilitySettings), symbol: "exclamationmark.triangle")
+            let warning = item("입력 도우미 손쉬운 사용 권한 필요", #selector(openAccessibilitySettings), symbol: "exclamationmark.triangle")
             warning.isEnabled = true
             return warning
         }
@@ -342,6 +366,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    @objc private func showHome() {
+        MailWindowCoordinator.shared.showSettings(section: .home)
+    }
+
+    @objc private func showGuide() {
+        MailWindowCoordinator.shared.showSettings(section: .help)
+    }
+
     @objc private func showSettings() {
         MailWindowCoordinator.shared.showSettings(section: .general)
     }
@@ -370,6 +402,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         InputMateCoordinator.shared.appState.requestAccessibilityAndRetry()
     }
 
+    @objc private func cancelExternalTranslation() {
+        viewModel.cancelExternalTranslation()
+    }
+
     /// ⌘W: 메일·설정·AI 브라우저 창이 앞에 있으면 그 창을 닫고, 아니면 화면 번역 창을 숨긴다.
     @objc private func closeFrontWindow() {
         if let key = NSApp.keyWindow, key !== overlay.panel, key.styleMask.contains(.closable) {
@@ -383,7 +419,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         loginItem.openSystemSettings()
     }
 
-    @objc private func checkForUpdates() {
+    @objc func checkForUpdates() {
         updater.checkForUpdates()
     }
 
@@ -403,19 +439,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let appMenuItem = NSMenuItem()
         let appMenu = NSMenu()
+        appMenu.addItem(item("HTT 홈…", #selector(showHome), symbol: "house"))
         appMenu.addItem(item("HTT 정보", #selector(showAbout)))
         appMenu.addItem(item("업데이트 확인…", #selector(checkForUpdates)))
         appMenu.addItem(.separator())
-        appMenu.addItem(item("Mac 관리…", #selector(showMacManagement)))
-        let settings = NSMenuItem(title: "설정…", action: #selector(showSettings), keyEquivalent: ",")
+        appMenu.addItem(item("Mac 상태·정리 항목 보기…", #selector(showMacManagement)))
+        let settings = NSMenuItem(title: "앱 설정…", action: #selector(showSettings), keyEquivalent: ",")
         settings.target = self
         appMenu.addItem(settings)
-        let inputSettings = NSMenuItem(title: "입력 설정…", action: #selector(showInputSettings), keyEquivalent: "")
+        let browserSettings = NSMenuItem(title: "브라우저 번역 설정…", action: #selector(showBrowserSetup), keyEquivalent: "")
+        browserSettings.target = self
+        appMenu.addItem(browserSettings)
+        let inputSettings = NSMenuItem(title: "입력 도우미 설정…", action: #selector(showInputSettings), keyEquivalent: "")
         inputSettings.target = self
         appMenu.addItem(inputSettings)
         let macSettings = NSMenuItem(title: "Mac 관리 설정…", action: #selector(showMacManagementSettings), keyEquivalent: "")
         macSettings.target = self
         appMenu.addItem(macSettings)
+        let guide = NSMenuItem(title: "사용 방법…", action: #selector(showGuide), keyEquivalent: "")
+        guide.target = self
+        appMenu.addItem(guide)
         appMenu.addItem(.separator())
         appMenu.addItem(NSMenuItem(title: "HTT 종료", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         appMenuItem.submenu = appMenu
@@ -424,7 +467,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 메일 번역(원래 메일 번역기의 파일 메뉴 항목)
         let mailMenuItem = NSMenuItem()
         let mailMenu = NSMenu(title: "메일")
-        let translateMail = NSMenuItem(title: "선택한 메일 번역", action: #selector(translateSelectedMail), keyEquivalent: "t")
+        let translateMail = NSMenuItem(title: "Mail에서 선택한 메일 번역", action: #selector(translateSelectedMail), keyEquivalent: "t")
         translateMail.keyEquivalentModifierMask = [.command, .shift]
         translateMail.target = self
         mailMenu.addItem(translateMail)
@@ -459,7 +502,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let windowMenuItem = NSMenuItem()
         let windowMenu = NSMenu(title: "윈도우")
-        let show = NSMenuItem(title: "화면 번역 창 보이기", action: #selector(showOverlay), keyEquivalent: "0")
+        let show = NSMenuItem(title: "화면 번역 창 열기", action: #selector(showOverlay), keyEquivalent: "0")
         show.target = self
         windowMenu.addItem(show)
         let hide = NSMenuItem(title: "화면 번역 창 숨기기", action: #selector(hideOverlay), keyEquivalent: "")
@@ -471,8 +514,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         windowMenuItem.submenu = windowMenu
         mainMenu.addItem(windowMenuItem)
 
+        let helpMenuItem = NSMenuItem()
+        let helpMenu = NSMenu(title: "도움말")
+        helpMenu.addItem(item("사용 방법…", #selector(showGuide)))
+        helpMenu.addItem(item("HTT 정보", #selector(showAbout)))
+        helpMenuItem.submenu = helpMenu
+        mainMenu.addItem(helpMenuItem)
+
         NSApp.mainMenu = mainMenu
         NSApp.windowsMenu = windowMenu
+        NSApp.helpMenu = helpMenu
     }
 
     // MARK: - 진단 로그 (비밀 정보 없음)

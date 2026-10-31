@@ -67,7 +67,7 @@ final class MailWindowCoordinator: NSObject, NSWindowDelegate {
 
     // MARK: - 설정 창(설정·옵션·브라우저 번역을 한 창의 탭으로 모음)
 
-    func showSettings(section: SettingsSection = .general) {
+    func showSettings(section: SettingsSection = .home) {
         NSApp.activate()
         settingsSection.section = section
         if settingsWindow == nil {
@@ -77,15 +77,21 @@ final class MailWindowCoordinator: NSObject, NSWindowDelegate {
                 .environmentObject(InputMateCoordinator.shared.appInputLanguageStore)
             let hosting = NSHostingController(rootView: rootView)
             let window = NSWindow(contentViewController: hosting)
-            window.title = "HTT 설정"
+            window.title = "HTT"
             // 메일 결과 창과 구분되는 설정 창 식별자
             window.identifier = NSUserInterfaceItemIdentifier("settings")
             window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
             window.isReleasedWhenClosed = false
             window.tabbingMode = .disallowed
+            window.minSize = NSSize(width: 760, height: 560)
+            window.setContentSize(NSSize(width: 900, height: 700))
             window.delegate = self
             window.center()
             settingsWindow = window
+        } else {
+            if let window = settingsWindow, window.isMiniaturized {
+                window.deminiaturize(nil)
+            }
         }
         settingsWindow?.makeKeyAndOrderFront(nil)
     }
